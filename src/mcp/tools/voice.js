@@ -2,7 +2,7 @@ import axios from 'axios'
 import fs from 'node:fs'
 import config from '../../../config/config.js'
 import { chatLogger as logger } from '../../core/utils/logger.js'
-import { StandardBotApi, StandardMessage, StandardRawApi } from '../../core/platform/index.js'
+import { hasStandardTarget, StandardBotApi, StandardMessage, StandardRawApi } from '../../core/platform/index.js'
 
 /**
  * 语音消息工具
@@ -346,6 +346,69 @@ function resolveVitsAudioUrl(audio) {
         }
     }
     return ''
+}
+
+/**
+ * 发送 TTS 语音，兼容 groupId 与 userId 同时提供。
+ * 群聊上下文优先向指定用户发群临时会话，私聊上下文优先发私聊；两种优先方式失败后
+ * 都回退到显式群，避免 StandardBotApi 因双目标互斥而直接报错。
+ * @param {StandardBotApi} api - 标准接口
+ * @param {Object|null} event - 当前事件
+ * @param {Object} options - 发送参数
+ * @param {string|number|null} [options.groupId] - 显式群目标
+ * @param {string|number|null} [options.userId] - 显式用户目标
+ * @param {*} options.message - 待发送消息
+ * @param {Object} logger - 日志器
+ * @returns {Promise<{result: Object, targetInfo: string, delivery: string, fallback: boolean}>} 发送结果与投递方式
+ */
+export async function sendTtsRecord(api, event, { groupId, userId, message, logger }) {
+    const hasGroup = hasStandardTarget(groupId)
+    const hasUser = hasStandardTarget(userId)
+
+    if (hasGroup && hasUser) {
+        if (event?.isGroup || hasStandardTarget(event?.group_id)) {
+            try {
+                const result = await api.sendTemporary(groupId, userId, message)
+                return {
+                    result,
+                    targetInfo: `群 ${groupId} 临时会话 ${userId}`,
+                    delivery: 'temporary',
+                    fallback: false
+                }
+            } catch (error) {
+                logger.warn(`[send_tts] 群临时会话发送失败，回退到群 ${groupId}: ${error.message}`)
+                return {
+                    result: await api.send({ groupId, message }),
+                    targetInfo: `群 ${groupId}（临时会话失败回退）`,
+                    delivery: 'group',
+                    fallback: true
+                }
+            }
+        }
+
+        try {
+            const result = await api.send({ userId, message })
+            return { result, targetInfo: `私聊 ${userId}`, delivery: 'private', fallback: false }
+        } catch (error) {
+            logger.warn(`[send_tts] 私聊发送失败，回退到群 ${groupId}: ${error.message}`)
+            return {
+                result: await api.send({ groupId, message }),
+                targetInfo: `群 ${groupId}（私聊失败回退）`,
+                delivery: 'group',
+                fallback: true
+            }
+        }
+    }
+
+    const result = await api.send({ groupId, userId, message })
+    const targetInfo = hasUser
+        ? `私聊 ${userId}`
+        : hasGroup
+          ? `群 ${groupId}`
+          : event?.isGroup
+            ? `当前群 ${event.group_id}`
+            : `当前私聊 ${event?.user_id}`
+    return { result, targetInfo, delivery: hasUser ? 'private' : hasGroup ? 'group' : 'current', fallback: false }
 }
 
 export const voiceTools = [
@@ -759,11 +822,12 @@ export const voiceTools = [
                 },
                 group_id: {
                     type: 'string',
-                    description: '目标群号（可选，不填则回复当前会话）'
+                    description: '目标群号（可选，不填则回复当前会话）。与 user_id 同时提供时作为回退发送目标'
                 },
                 user_id: {
                     type: 'string',
-                    description: '目标用户QQ号，用于私聊发送（可选）'
+                    description:
+                        '目标用户QQ号（可选）。与 group_id 同时提供时：群聊上下文先发群临时会话，私聊上下文先发私聊，失败后回退到 group_id 指定的群'
                 }
             },
             required: ['text']
@@ -858,18 +922,17 @@ export const voiceTools = [
                     return { success: false, error: `下载音频失败: ${downloadErr.message}` }
                 }
 
-                // 发送语音消息
+                // 发送语音消息：双目标在群聊上下文走群临时会话，私聊上下文走私聊，失败均回退到显式群
                 const recordSeg = StandardMessage.record(recordData)
-                const result = await api.send({ groupId: targetGroupId, userId: targetUserId, message: recordSeg })
-                const targetInfo = targetUserId
-                    ? `私聊 ${targetUserId}`
-                    : targetGroupId
-                      ? `群 ${targetGroupId}`
-                      : e?.isGroup
-                        ? `当前群 ${e.group_id}`
-                        : `当前私聊 ${e?.user_id}`
+                const delivery = await sendTtsRecord(api, e, {
+                    groupId: targetGroupId,
+                    userId: targetUserId,
+                    message: recordSeg,
+                    logger
+                })
+                const result = delivery.result
 
-                logger.debug(`[send_tts] 发送目标: ${targetInfo}`)
+                logger.debug(`[send_tts] 发送目标: ${delivery.targetInfo}`)
 
                 if (result.success) {
                     logger.info(`[send_tts] 语音发送成功: message_id=${result.message_id}`)
@@ -879,7 +942,9 @@ export const voiceTools = [
                         message: `VITS语音已发送 (角色: ${speaker})`,
                         message_id: result.message_id,
                         speaker,
-                        text: text.substring(0, 100)
+                        text: text.substring(0, 100),
+                        delivery: delivery.delivery,
+                        fallback: delivery.fallback
                     }
                 }
 
@@ -889,7 +954,9 @@ export const voiceTools = [
                     completed: true,
                     message: `VITS语音已发送 (角色: ${speaker})`,
                     speaker,
-                    text: text.substring(0, 100)
+                    text: text.substring(0, 100),
+                    delivery: delivery.delivery,
+                    fallback: delivery.fallback
                 }
             } catch (err) {
                 // 详细的错误日志
