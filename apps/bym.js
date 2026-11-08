@@ -1,5 +1,5 @@
 import config from '../config/config.js'
-import { cleanCQCode, segment } from '../src/utils/messageParser.js'
+import { cleanCQCode, segment, renderSegmentsToText, buildEventTextWithAt } from '../src/utils/messageParser.js'
 import { isMessageProcessed, markMessageProcessed, isSelfMessage } from '../src/utils/messageDedup.js'
 import { renderService } from '../src/services/media/RenderService.js'
 import { ensureScopeManager } from '../src/services/scope/ScopeManager.js'
@@ -44,10 +44,21 @@ async function getBymGroupContextMessages(e, groupId, limit = 15) {
             const messages = (history || [])
                 .filter(msg => String(msg.message_id || '') !== String(e.message_id || ''))
                 .map(msg => {
-                    const content = (msg.message || [])
-                        .filter(part => part.type === 'text')
-                        .map(part => part.text || '')
-                        .join('')
+                    // 渲染时保留 @提及（回退旧的纯文本拼接），伪人上下文才能看到“@的是谁”
+                    const atResolver = qq => {
+                        try {
+                            const member = e?.bot?.gml?.get?.(String(msg.group_id ?? e?.group_id))?.get?.(String(qq))
+                            return member?.card || member?.nickname || ''
+                        } catch {
+                            return ''
+                        }
+                    }
+                    const content =
+                        renderSegmentsToText(msg.message, { resolveName: atResolver }) ||
+                        (msg.message || [])
+                            .filter(part => part.type === 'text')
+                            .map(part => part.text || '')
+                            .join('')
                     return {
                         nickname: msg.sender?.card || msg.sender?.nickname || msg.sender?.user_id || '用户',
                         userId: msg.sender?.user_id,
@@ -256,8 +267,8 @@ export class bym extends plugin {
                 return false
             }
 
-            // Get message text and clean CQ codes
-            const messageText = cleanCQCode(e.msg || '')
+            // Get message text and clean CQ codes（保留 @提及，伪人才能识别“@的是别人”）
+            const messageText = cleanCQCode(buildEventTextWithAt(e))
             if (!messageText.trim()) {
                 return false
             }

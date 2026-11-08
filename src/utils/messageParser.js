@@ -1770,6 +1770,111 @@ function cleanCQCode(text) {
 }
 
 /**
+ * 将消息段数组渲染为可读文本，且保留 @提及（对模型可见）。
+ * 与 cleanCQCode 的区别：at 段不会被丢弃，渲染为 @名字（解析不到名字时用 QQ 号）。
+ * 兼容 OneBot 扁平段（{type:'at', qq}）与嵌套段（{type:'at', data:{qq}}）两种形态。
+ * @param {Array} message 消息段数组
+ * @param {Object} [options]
+ * @param {boolean} [options.skipBotAt=false] 是否跳过 @机器人 自身
+ * @param {string|number|null} [options.botId] 机器人 QQ（skipBotAt 时必填）
+ * @param {Function} [options.resolveName] (qq) => 名字，解析失败返回空字符串
+ * @returns {string}
+ */
+export function renderSegmentsToText(message, options = {}) {
+    const { skipBotAt = false, botId = null, resolveName = null } = options
+    if (!Array.isArray(message)) return ''
+    const parts = []
+    for (const val of message) {
+        if (!val) continue
+        const segData = getSegmentData(val)
+        const segType = val.type || segData._type || ''
+        switch (segType) {
+            case 'text': {
+                parts.push(segData.text || val.text || '')
+                break
+            }
+            case 'at': {
+                const qq = String(segData.qq ?? val.qq ?? segData.data?.qq ?? '')
+                const isAll =
+                    segData.all === true || segData.all === 'all' || val.all === true || qq === 'all' || qq === '0'
+                if (isAll) {
+                    parts.push('@全体成员')
+                    break
+                }
+                if (skipBotAt && botId && qq === String(botId)) break
+                const rawName = segData.name || segData.text || val.text || segData.data?.name || ''
+                const nameFromSeg = String(rawName).replace(/^@/, '').trim()
+                const nameFromLookup = resolveName ? String(resolveName(qq) || '').trim() : ''
+                parts.push(`@${nameFromSeg || nameFromLookup || qq}`)
+                break
+            }
+            case 'image':
+            case 'image_url': {
+                parts.push('[图片]')
+                break
+            }
+            case 'face': {
+                parts.push('[表情]')
+                break
+            }
+            case 'record':
+            case 'audio': {
+                parts.push('[语音]')
+                break
+            }
+            case 'video': {
+                parts.push('[视频]')
+                break
+            }
+            case 'file': {
+                const fileName = segData.name || val.name || ''
+                parts.push(fileName ? `[文件:${fileName}]` : '[文件]')
+                break
+            }
+            case 'forward':
+            case 'node': {
+                parts.push('[转发消息]')
+                break
+            }
+            case 'reply':
+            case 'source': {
+                break
+            }
+            default: {
+                if (segType) parts.push(`[${segType}]`)
+            }
+        }
+    }
+    return parts.join('')
+}
+
+/**
+ * 事件级封装：渲染 e.message 并保留 @提及；无消息段时回退 e.msg。
+ * 用于给模型/判断器的输入文本，避免 @对象信息在管线里丢失。
+ * @param {Object} e Yunzai 消息事件
+ * @param {Object} [options] 透传 renderSegmentsToText 选项（botId/resolveName 自动补全）
+ * @returns {string}
+ */
+export function buildEventTextWithAt(e, options = {}) {
+    const botId =
+        options.botId ?? e?.self_id ?? e?.bot?.uin ?? e?.bot?.self_id ?? globalThis.Bot?.uin ?? null
+    const resolveName =
+        options.resolveName ||
+        (qq => {
+            try {
+                const member = e?.bot?.gml?.get?.(String(e?.group_id))?.get?.(String(qq))
+                return member?.card || member?.nickname || ''
+            } catch {
+                return ''
+            }
+        })
+    const rendered = renderSegmentsToText(e?.message, { ...options, botId, resolveName })
+    const text = rendered || (e?.msg || '')
+    // 兜底：文本里残留 CQ 码（个别事件/注入场景）时按 CQ 规则清理（at 转为 @名字）
+    return text.includes('[CQ:') ? cleanCQCode(text) : text
+}
+
+/**
  * 导出CQ码清理函数供外部使用
  */
 export { cleanCQCode }

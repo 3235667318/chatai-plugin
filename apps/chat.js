@@ -1,5 +1,5 @@
 import config from '../config/config.js'
-import { parseUserMessage, segment } from '../src/utils/messageParser.js'
+import { parseUserMessage, segment, buildEventTextWithAt } from '../src/utils/messageParser.js'
 import { isDebugEnabled } from './Commands.js'
 import {
     recordSentMessage,
@@ -336,7 +336,9 @@ export class Chat extends plugin {
 
         if (groupCfg.at && isAtBot) {
             const isReplyToBot = isReplyToBotMessage(e)
-            const cleanedMsg = this.cleanAtBot(rawMsg)
+            // 优先用带 @提及 的渲染文本，避免消息里 @ 别人的信息丢失
+            const enrichedMsg = buildEventTextWithAt(e, { skipBotAt: true })
+            const cleanedMsg = enrichedMsg || this.cleanAtBot(rawMsg)
             const finalMsg = cleanedMsg.trim() ? cleanedMsg : rawMsg
             if (!finalMsg.trim()) return { triggered: false }
 
@@ -348,7 +350,7 @@ export class Chat extends plugin {
 
         // 引用机器人
         if (groupCfg.replyBot && e.source && !e.atBot && isReplyToBotMessage(e)) {
-            return { triggered: true, msg: rawMsg }
+            return { triggered: true, msg: buildEventTextWithAt(e) || rawMsg }
         }
 
         // 前缀触发
@@ -356,9 +358,14 @@ export class Chat extends plugin {
             const cleanedForPrefix = this.cleanAtBot(rawMsg)
             const result = this.checkPrefix(cleanedForPrefix, cfg.prefixes, cfg.prefixPersonas)
             if (result.matched) {
+                // 保留消息中 @ 其他用户的信息；前缀用渲染文本重新剥离，失败则回退原文
+                const enrichedPrefix = buildEventTextWithAt(e, { skipBotAt: true })
+                const content = enrichedPrefix.startsWith(result.prefix)
+                    ? enrichedPrefix.slice(result.prefix.length).trimStart()
+                    : result.content
                 return {
                     triggered: true,
-                    msg: result.content,
+                    msg: content,
                     persona: result.persona,
                     isPersonaPrefix: result.isPersonaPrefix
                 }
@@ -369,7 +376,7 @@ export class Chat extends plugin {
         if (groupCfg.keyword && cfg.keywords?.length > 0) {
             for (const kw of cfg.keywords) {
                 if (kw && rawMsg.includes(kw)) {
-                    return { triggered: true, msg: rawMsg }
+                    return { triggered: true, msg: buildEventTextWithAt(e) || rawMsg }
                 }
             }
         }
@@ -378,7 +385,7 @@ export class Chat extends plugin {
         if (groupCfg.random) {
             const rate = groupCfg.randomRate || 0.05
             if (Math.random() < rate) {
-                return { triggered: true, msg: rawMsg }
+                return { triggered: true, msg: buildEventTextWithAt(e) || rawMsg }
             }
         }
 
@@ -442,9 +449,9 @@ export class Chat extends plugin {
         const activeConv = conversationTracker.getActiveConversation(groupId, userId)
         const chatHistory = activeConv?.chatHistory || []
 
-        // 构建用户消息
+        // 构建用户消息（保留 @提及，判断器才能识别“@了别人=不是在叫机器人”）
         const senderName = e.sender?.card || e.sender?.nickname || '未知用户'
-        const userMessage = `${senderName}: ${e.msg || ''}`
+        const userMessage = `${senderName}: ${buildEventTextWithAt(e)}`
 
         // 使用批量判断队列（减少API调用）
         const isTalking = await conversationTracker.addToBatchJudgment(groupId, userId, userMessage, chatHistory, e)
@@ -535,7 +542,7 @@ export class Chat extends plugin {
             memoryManager.collectGroupMessage(String(e.group_id), {
                 user_id: e.user_id,
                 sender: e.sender,
-                msg: e.msg,
+                msg: buildEventTextWithAt(e) || e.msg,
                 raw_message: e.raw_message
             })
         } catch {}
