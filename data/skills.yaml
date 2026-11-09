@@ -330,7 +330,7 @@ skills:
     # - 'auto': 按触发词/名称/描述与当前上下文匹配（默认）
     # - 'all': 注入全部已扫描到的文档技能
     # - 'explicit': 仅注入调用方显式指定的技能
-    mode: 'auto'
+    mode: 'explicit'
     # 披露深度（与 mode 正交：mode 决定选哪些技能，disclosure 决定选中后注入多少内容）:
     # - 'progressive': 只把技能元数据与附属文件清单写入系统提示词，正文由模型按需
     #   调用 get_skill_info / read_skill_file 读取（默认，显著节省上下文）
@@ -347,7 +347,7 @@ skills:
     # 单个技能文件最大字节数，超出则跳过
     maxFileBytes: 65536
     # 注入 system prompt 的最大字符数，超出则截断
-    maxPromptChars: 20000
+    maxPromptChars: 4000
 
   security:
     dangerousTools:

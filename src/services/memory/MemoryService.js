@@ -135,6 +135,14 @@ class MemoryService {
             throw new Error('userId, category and content are required')
         }
 
+        // SQLite 对数字做 TEXT 亲和会写成 "203231682.0"，统一规范成整数字符串
+        userId = String(userId).replace(/\.0+$/, '')
+        if (groupId !== null && groupId !== undefined && groupId !== '') {
+            groupId = String(groupId).replace(/\.0+$/, '')
+        } else {
+            groupId = null
+        }
+
         if (!isValidCategory(category)) {
             throw new Error(`Invalid category: ${category}`)
         }

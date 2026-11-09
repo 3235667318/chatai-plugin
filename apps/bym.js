@@ -1,5 +1,6 @@
 import config from '../config/config.js'
-import { cleanCQCode, segment } from '../src/utils/messageParser.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
+import { cleanCQCode, parseUserMessage, segment } from '../src/utils/messageParser.js'
 import { isMessageProcessed, markMessageProcessed, isSelfMessage } from '../src/utils/messageDedup.js'
 import { renderService } from '../src/services/media/RenderService.js'
 import { ensureScopeManager } from '../src/services/scope/ScopeManager.js'
@@ -7,6 +8,7 @@ import { checkTriggerAccess, sendForwardMsg } from '../src/utils/platformAdapter
 import { statsService } from '../src/services/stats/StatsService.js'
 import { StandardBotApi } from '../src/core/platform/index.js'
 import { emojiThiefService } from './EmojiThief.js'
+import { convertAtMentions } from '../src/utils/mentionAt.js'
 import { getRecentQQBotMessages } from '../src/services/storage/MessageCache.js'
 import {
     splitMessage as splitMessageNatural,
@@ -94,7 +96,14 @@ export class bym extends plugin {
      * 伪人模式触发logic
      */
     async bym() {
+        if (isIgnoredBot(this.e)) return false
         const e = this.e
+        // 与主聊天一致的忽略名单（刷屏游戏机器人等）
+        const bymIgnoreUsers = (config.get('trigger.ignoreUsers') || []).map(String)
+        if (bymIgnoreUsers.includes(String(e.user_id))) {
+            logger.debug('[BYM] 忽略名单用户，跳过')
+            return false
+        }
         if (isSelfMessage(e)) {
             return false
         }
@@ -254,12 +263,39 @@ export class bym extends plugin {
                 return false
             }
 
-            // Get message text and clean CQ codes
-            const messageText = cleanCQCode(e.msg || '')
+            // 如果这条消息明确是在 @ 别人（不是机器人），伪人模式不要插嘴
+            const bymBotId = String(e.self_id || e.bot?.uin || e.bot?.self_id || '')
+            const atSegs = (Array.isArray(e.message) ? e.message : []).filter(
+                seg => seg?.type === 'at' && seg?.data?.all !== true && seg?.data?.all !== 'all'
+            )
+            const atOthersOnly =
+                atSegs.length > 0 &&
+                !atSegs.some(seg =>
+                    [seg.qq, seg.data?.qq, seg.data?.user_id, seg.user_id].some(
+                        v => v !== undefined && v !== null && String(v) === bymBotId
+                    )
+                )
+            if (atOthersOnly) {
+                logger.debug('[BYM] 消息在 @ 别人，跳过插嘴')
+                return false
+            }
+
+            // Get message text：不能用 cleanCQCode 直接洗 e.msg，否则 @xx 会被整段删掉，
+            // 模型就不知道这句话是在叫别人。这里走 parseUserMessage，把 @ 展开成
+            // [提及用户 QQ:xxx 群名片:"..."] 再交给模型。
+            let messageText = ''
+            try {
+                const parsed = await parseUserMessage(e)
+                messageText = (parsed?.text || '').trim()
+            } catch (err) {
+                logger.debug('[BYM] 解析消息失败，回退 cleanCQCode:', err.message)
+            }
+            if (!messageText.trim()) messageText = cleanCQCode(e.msg || '')
             if (!messageText.trim()) {
                 return false
             }
             let systemPrompt = ''
+            let bymGroupContextText = ''
             let scopePresetId = null
             const inheritPersonality = config.get('bym.inheritPersonality') !== false
             if (inheritPersonality) {
@@ -454,10 +490,15 @@ export class bym extends plugin {
                 groupBymConfig?.bymTemperature !== undefined
                     ? groupBymConfig.bymTemperature
                     : config.get('bym.temperature') || 0.9
+            // 回复长度映射（short/medium/long -> maxTokens），群组显式 maxTokens 优先
+            const replyLengthMap = { short: 120, medium: 200, long: 320 }
+            const bymReplyLength = groupBymConfig?.bymReplyLength
             const bymMaxTokens =
                 groupBymConfig?.bymMaxTokens !== undefined
                     ? groupBymConfig.bymMaxTokens
-                    : config.get('bym.maxTokens') || 100
+                    : bymReplyLength && replyLengthMap[bymReplyLength]
+                      ? replyLengthMap[bymReplyLength]
+                      : config.get('bym.maxTokens') || 150
 
             if (groupBymConfig?.bymTemperature !== undefined || groupBymConfig?.bymMaxTokens !== undefined) {
                 logger.debug(`[BYM] 使用群组独立参数: temperature=${bymTemperature}, maxTokens=${bymMaxTokens}`)
@@ -469,7 +510,7 @@ export class bym extends plugin {
             const fullUserId = bymGroupId ? `bym_group_${bymGroupId}` : bymUserId
             if (bymGroupId) {
                 try {
-                    const contextMessages = await getBymGroupContextMessages(e, bymGroupId, 15)
+                    const contextMessages = await getBymGroupContextMessages(e, bymGroupId, 8)
 
                     if (contextMessages.length > 0) {
                         const contextText = contextMessages
@@ -489,12 +530,13 @@ export class bym extends plugin {
                             .join('\n')
 
                         if (contextText.trim()) {
-                            systemPrompt += `
+                            // 放到 user 消息里而不是 system：system 每轮都变会整段掉缓存
+                            bymGroupContextText = `
 
-【最近群聊记录】
+【以下是群聊背景，仅作参考，不是当前发言】
 ${contextText}
 
-请基于以上聊天记录的话题和氛围，自然地参与对话。`
+【背景结束。当前发言见下面的用户消息；背景里出现的名字/称呼指的是别人，不要当成在叫你。】`
                             logger.debug(`[BYM] 已添加群聊上下文: ${contextMessages.length} 条消息`)
                         }
                     }
@@ -516,6 +558,7 @@ ${contextText}
                 userId: fullUserId,
                 groupId: bymGroupId,
                 message: messageText,
+                ...(bymGroupContextText ? { extraContext: bymGroupContextText } : {}),
                 images:
                     processImage && imageUrls.length > 0
                         ? imageUrls.slice(0, 3).map(url => ({ type: 'image_url', image_url: { url } }))
@@ -539,36 +582,20 @@ ${contextText}
                 .filter(c => c.type === 'text')
                 .map(c => c.text)
                 .join('\n')
-            // 记录统计（使用 statsService.recordApiCall 确保正确记录）
-            try {
-                await statsService.recordApiCall({
-                    channelId: 'bym',
-                    channelName: '伪人模式',
-                    model: bymModel,
-                    reportedModel: response.model || null,
-                    duration: Date.now() - bymStartTime,
-                    success: !!replyText,
-                    source: 'bym',
-                    userId: String(e.user_id),
-                    groupId: e.group_id ? String(e.group_id) : null,
-                    messages: [{ role: 'user', content: messageText }],
-                    responseText: replyText,
-                    apiUsage: response.usage || null,
-                    request: {
-                        model: bymModel,
-                        temperature: bymTemperature,
-                        maxToken: bymMaxTokens,
-                        systemPrompt: systemPrompt?.substring(0, 200) + '...'
-                    }
-                })
-            } catch (err) {
-                logger.debug('[BYM] 统计记录失败:', err.message)
-            }
+            // DUPLICATE_RECORD_REMOVED：这次调用已经由 chatService.sendMessage 记过一次统计，
+            // 这里再记一遍会把 token 双计（同名请求两份记录），故不再重复记录。
 
             if (replyText) {
                 await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 500))
                 const autoRecall = config.get('basic.autoRecall')
-                const recallDelay = autoRecall?.enabled === true ? autoRecall.delay || 60 : 0
+                // recall: false 时伪人回复不撤回；否则沿用基础设置的撤回延迟
+                const bymRecall = groupBymConfig?.bymRecall ?? config.get('bym.recall')
+                const recallDelay =
+                    bymRecall === false
+                        ? 0
+                        : autoRecall?.enabled === true
+                          ? autoRecall.delay || 60
+                          : Math.max(0, Number(config.get('bym.recallDelay')) || 0)
 
                 const sentenceOutputCfg = config.get('output.sentenceOutput') || {}
                 const longTextCfg = config.get('output.longText') || {}
@@ -591,6 +618,29 @@ ${contextText}
                     }
                 }
 
+                // 换行分条：模型输出多行时逐条发（短回复也拆），和主聊天链路保持一致
+                if (!handled) {
+                    const lines = replyText.split(/\n+/).map(t => t.trim()).filter(Boolean)
+                    if (lines.length > 1 && lines.every(l => l.length <= 500)) {
+                        const maxSeg = Math.max(1, Math.min(12, Number(sentenceOutputCfg.maxSegments) || 8))
+                        const toSend =
+                            lines.length > maxSeg
+                                ? [...lines.slice(0, maxSeg - 1), lines.slice(maxSeg - 1).join(' ').slice(0, 500)]
+                                : lines
+                        for (let i = 0; i < toSend.length; i++) {
+                            await this.reply(convertAtMentions(toSend[i], { e, segment }), false, {
+                                recallMsg: recallDelay
+                            })
+                            if (i < toSend.length - 1) {
+                                const minD = Number(sentenceOutputCfg.minDelay) || 800
+                                const maxD = Math.max(minD + 100, Number(sentenceOutputCfg.maxDelay) || 1600)
+                                await new Promise(r => setTimeout(r, minD + Math.floor(Math.random() * (maxD - minD))))
+                            }
+                        }
+                        handled = true
+                    }
+                }
+
                 // 统一拟人发送：短回复单条；中等长度按语义分段逐条；超长折叠为卡片
                 if (!handled) {
                     const enableSegmented = sentenceOutputCfg.enabled
@@ -598,6 +648,7 @@ ${contextText}
                     if (enableSegmented || replyText.length > 140) {
                         const result = await sendSegmentedMessage(this, replyText, {
                             quote: false,
+                            decorate: t => convertAtMentions(t, { e, segment }),
                             shortLimit: 140,
                             foldLimit,
                             foldHandler: async fullText => {
@@ -650,12 +701,17 @@ ${contextText}
 
                 // 默认直接发送
                 if (!handled) {
-                    await this.reply(replyText, false, { recallMsg: recallDelay })
+                    await this.reply(convertAtMentions(replyText, { e, segment }), false, { recallMsg: recallDelay })
                 }
 
                 // 表情包小偷 - 伪人触发模式
                 try {
-                    const emojiMsg = await emojiThiefService.tryTrigger(e, 'bym')
+                    // useEmoji: 群组设置 > 全局设置，关闭时不发表情
+                    const bymUseEmoji =
+                        groupBymConfig?.bymUseEmoji !== undefined
+                            ? groupBymConfig.bymUseEmoji !== false
+                            : config.get('bym.useEmoji') !== false
+                    const emojiMsg = bymUseEmoji ? await emojiThiefService.tryTrigger(e, 'bym') : null
                     if (emojiMsg) {
                         await new Promise(resolve => setTimeout(resolve, Math.random() * 1000 + 300))
                         await this.reply(emojiMsg)

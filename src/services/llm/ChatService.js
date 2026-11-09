@@ -6,6 +6,9 @@
 
 import { chatLogger } from '../../core/utils/logger.js'
 const logger = chatLogger
+
+// 按需搜索冷却记录（conversationId -> 上次搜索时间）
+const searchCooldownMap = new Map()
 import { LlmService } from './LlmService.js'
 import { imageService } from '../media/ImageService.js'
 import { contextManager, buildGroupEnvironmentPrompt, AUTO_CLEAN_NOTICE } from './ContextManager.js'
@@ -15,7 +18,7 @@ import config from '../../../config/config.js'
 import { getAllTools, setToolContext } from '../../core/utils/toolAdapter.js'
 import { presetManager } from '../preset/PresetManager.js'
 import { memoryManager } from '../storage/MemoryManager.js'
-import { buildMemoryBlock, buildKnowledgeGraphBlock, getMemoryToolGuides } from './MemoryContextAssembly.js'
+import { buildMemoryBlock, buildMemoryCatalog, buildKnowledgeGraphBlock, getMemoryToolGuides } from './MemoryContextAssembly.js'
 import { getScopeManager } from '../scope/ScopeManager.js'
 import { databaseService } from '../storage/DatabaseService.js'
 import {
@@ -63,6 +66,74 @@ const ensureScopeManager = async () => {
  * })
  * ```
  */
+/**
+ * 滞回裁剪：只有超过 hard 才裁，且一次裁到 soft。
+ *
+ * 不用「每轮裁到固定预算」的原因：那样每轮都会丢掉最旧一条，
+ * messages 前缀每轮都变，上游 prompt 缓存直接失效（实测命中率只剩 3 成）。
+ */
+function trimHistoryStable(list, soft = 1800, hard = 3200) {
+    if (!Array.isArray(list) || list.length === 0) return list
+    const textOf = item => {
+        const c = item?.content
+        if (typeof c === 'string') return c
+        if (Array.isArray(c)) return c.map(p => p?.text || '').join('')
+        return ''
+    }
+    const total = list.reduce((a, m) => a + textOf(m).length, 0)
+    if (total <= hard) return list
+    const out = []
+    let used = 0
+    for (let i = list.length - 1; i >= 0; i--) {
+        const len = textOf(list[i]).length
+        if (out.length > 0 && used + len > soft) break
+        out.unshift(list[i])
+        used += len
+    }
+    return out
+}
+
+/** 单条历史消息超过 maxChars 就截断，避免一条长文把上下文撑爆 */
+function capHistoryMessageLength(list, maxChars = 800) {
+    if (!Array.isArray(list)) return list
+    const capText = text => (text.length > maxChars ? text.slice(0, maxChars) + '…' : text)
+    return list.map(msg => {
+        const content = msg?.content
+        if (typeof content === 'string') return { ...msg, content: capText(content) }
+        if (Array.isArray(content)) {
+            return {
+                ...msg,
+                content: content.map(part =>
+                    part && typeof part === 'object' && typeof part.text === 'string'
+                        ? { ...part, text: capText(part.text) }
+                        : part
+                )
+            }
+        }
+        return msg
+    })
+}
+
+/** 按字符预算从旧到新裁剪历史，防止长对话把上下文撑爆 */
+function trimHistoryByChars(list, budget = 4000) {
+    if (!Array.isArray(list) || list.length === 0) return list
+    const textOf = item => {
+        const c = item?.content
+        if (typeof c === 'string') return c
+        if (Array.isArray(c)) return c.map(p => p?.text || '').join('')
+        return ''
+    }
+    const out = []
+    let used = 0
+    for (let i = list.length - 1; i >= 0; i--) {
+        const len = textOf(list[i]).length
+        if (out.length > 0 && used + len > budget) break
+        out.unshift(list[i])
+        used += len
+    }
+    return out
+}
+
 export class ChatService {
     /**
      * 发送聊天消息
@@ -251,7 +322,19 @@ export class ChatService {
             try {
                 // 如果是 image_url 类型对象（来自 messageParser）
                 if (imageRef && typeof imageRef === 'object') {
-                    const inlineImage = normalizeInlineImageContent(imageRef)
+                    let inlineImage = normalizeInlineImageContent(imageRef)
+                    // 兼容 {type:'image', url:'<裸base64>'} 这种形式（沙盒/部分适配器会这样给）
+                    if (!inlineImage && imageRef.type === 'image') {
+                        const candidate = imageRef.url || imageRef.file || imageRef.image
+                        if (
+                            typeof candidate === 'string' &&
+                            (candidate.startsWith('base64://') ||
+                                candidate.startsWith('base64:') ||
+                                /^[A-Za-z0-9+/]{100,}={0,2}$/.test(candidate.replace(/\s+/g, '')))
+                        ) {
+                            inlineImage = normalizeInlineImageContent({ ...imageRef, image: candidate })
+                        }
+                    }
                     if (inlineImage) {
                         messageContent.push(inlineImage)
                         continue
@@ -374,6 +457,18 @@ export class ChatService {
         // 增加历史记录数量以改善上下文理解，从20条增加到30条
         const historyLimit = config.get('context.autoContext.maxHistoryMessages') || 30
         let history = skipHistory ? [] : await contextManager.getContextHistory(conversationId, historyLimit)
+
+        // 按 token 轮换：旧对话压成四栏摘要，只留最近几条原文
+        let rotationBlock = ''
+        try {
+            const { contextRotation } = await import('./ContextRotation.js')
+            rotationBlock = await contextRotation.maybeRotate({ conversationId, history, groupId })
+            if (rotationBlock) {
+                history = await contextManager.getContextHistory(conversationId, historyLimit)
+            }
+        } catch (err) {
+            globalThis.logger?.warn?.('[Chat] 上下文轮换失败:', err.message)
+        }
 
         // 获取默认预设配置
         await presetManager.init()
@@ -797,17 +892,33 @@ export class ChatService {
             }
             logger.debug(`[ChatService] 前缀人格应用后systemPrompt长度: ${systemPrompt.length}`)
         }
+        // 动态上下文（说话人/记忆/群记忆/知识图谱）不再拼进 system prompt：
+        // system 前缀保持稳定，上游 prompt 缓存才能命中；这些内容每轮都变，放进本轮用户消息。
+        const dynamicContext = []
+        // 优先级最高的上下文（前情摘要、实时搜索），不参与 600 字软上限
+        const priorityContext = []
+        // 调用方额外背景（bym 的群聊记录等）：放优先级上下文，不混进当前用户消息
+        if (options.extraContext) priorityContext.push(String(options.extraContext))
+        if (rotationBlock) priorityContext.push(rotationBlock)
         if (config.get('memory.enabled') && !skipPersona) {
             try {
-                const memoryContext = await buildMemoryBlock({
-                    userId,
-                    cleanUserId,
-                    groupId: groupId ? String(groupId) : null,
-                    message: message || '',
-                    event
-                })
+                // 只有「问过去的事」才展开记忆正文，其余只给目录，省 token
+                const asksPast = typeof message === 'string' &&
+                    /还记|记得|之前|上次|以前|我说过|我跟你说|我是谁|我叫|忘|聊过|说过/.test(message)
+                const memoryContext = asksPast
+                    ? await buildMemoryBlock({
+                          userId,
+                          cleanUserId,
+                          groupId: groupId ? String(groupId) : null,
+                          message: message || '',
+                          event
+                      })
+                    : await buildMemoryCatalog({
+                          cleanUserId,
+                          groupId: groupId ? String(groupId) : null
+                      })
                 if (memoryContext) {
-                    systemPrompt += memoryContext
+                    dynamicContext.push(String(memoryContext).slice(0, 500))
                     logger.debug(`[ChatService] 已添加记忆上下文到系统提示 (${memoryContext.length} 字符)`)
                     if (debugInfo) {
                         debugInfo.memory.userMemory = {
@@ -820,6 +931,50 @@ export class ChatService {
                     logger.debug(`[ChatService] 无用户记忆`)
                     if (debugInfo) {
                         debugInfo.memory.userMemory = { hasMemory: false }
+                    }
+                }
+                // 深层记忆：按关键词从库里捞最多 3 条，补在浅层目录后面
+                if (!asksPast && typeof message === 'string' && message.trim().length >= 2) {
+                    try {
+                        const seen = new Set()
+                        const picked = []
+                        const pushHits = list => {
+                            for (const m of list || []) {
+                                const t = String(m?.content || '').trim()
+                                if (!t || seen.has(t)) continue
+                                seen.add(t)
+                                picked.push(t.length > 60 ? t.slice(0, 60) + '…' : t)
+                                if (picked.length >= 3) return
+                            }
+                        }
+                        // 把消息拆成关键词再检索：直接拿整句 LIKE 基本匹配不到
+                        const stopWords = /^(什么|怎么|可以|还能|玩吗|这个|那个|今天|现在|最近|就是|不是|没有|我们|你们|他们|一下|真的|已经|一个|这样|那样)$/
+                        const keywords = []
+                        for (const seg of String(message).split(/[^\u4e00-\u9fa5A-Za-z0-9]+/)) {
+                            const t = seg.trim()
+                            if (!t) continue
+                            if (/^[\u4e00-\u9fa5]+$/.test(t)) {
+                                for (let n = Math.min(4, t.length); n >= 2; n--) {
+                                    for (let i = 0; i + n <= t.length; i++) {
+                                        const w = t.slice(i, i + n)
+                                        if (!stopWords.test(w) && !keywords.includes(w)) keywords.push(w)
+                                    }
+                                }
+                            } else if (t.length >= 2) keywords.push(t)
+                            if (keywords.length >= 24) break
+                        }
+                        for (const kw of keywords.slice(0, 8)) {
+                            pushHits(databaseService.searchMemories(cleanUserId, kw, 2))
+                            if (groupId) {
+                                pushHits(databaseService.searchMemories(`group:${groupId}:user:${cleanUserId}`, kw, 2))
+                            }
+                            if (picked.length >= 3) break
+                        }
+                        if (picked.length > 0) {
+                            dynamicContext.push(`\n【相关记忆】${picked.join('；')}`.slice(0, 220))
+                        }
+                    } catch (err) {
+                        logger.debug('[ChatService] 相关记忆检索失败:', err.message)
                     }
                 }
                 if (groupId && config.get('memory.groupContext.enabled')) {
@@ -839,7 +994,7 @@ export class ChatService {
                             parts.push(`群友关系：${groupMemory.relations.join('；')}`)
                         }
                         if (parts.length > 0) {
-                            systemPrompt += '\n【群聊记忆】\n' + parts.join('\n') + '\n'
+                            dynamicContext.push('\n【群聊记忆】\n' + parts.join('\n').slice(0, 400))
                             logger.debug(`[ChatService] 已添加群聊记忆上下文`)
                         }
                         if (debugInfo) {
@@ -857,14 +1012,14 @@ export class ChatService {
                 logger.warn('[ChatService] 获取记忆上下文失败:', err.message)
             }
         }
-        if (config.get('memory.enabled') && !skipPersona) {
+        if (config.get('memory.enabled') && !skipPersona && config.get('memory.knowledgeGraph') !== false) {
             try {
                 const graphContext = await buildKnowledgeGraphBlock({
                     userId: String(cleanUserId),
                     groupId: groupId ? String(groupId) : null
                 })
                 if (graphContext) {
-                    systemPrompt += graphContext
+                    dynamicContext.push(graphContext)
                     logger.debug(`[ChatService] 已添加知识图谱上下文 (${graphContext.length} 字符)`)
                     if (debugInfo) {
                         debugInfo.memory.knowledgeGraph = {
@@ -949,11 +1104,21 @@ export class ChatService {
         const groupContextSharingEnabled = config.get('context.groupContextSharing') !== false
         const isolation = contextManager.getIsolationMode()
         if (groupId && !isolation.groupUserIsolation && groupContextSharingEnabled) {
-            validHistory = contextManager.buildLabeledContext(validHistory)
+            // 按字符预算裁剪历史（约 4000 字），再带上每条消息的发送时间
+            // 轮换开启时由 token 上限接管，这里只做极端兜底
+            const rotationEnabled = (config.get('context.rotation') || {}).enabled !== false
+            validHistory = rotationEnabled
+                ? trimHistoryStable(validHistory, 12000, 20000)
+                : trimHistoryStable(validHistory, 3000, 6000)
+            validHistory = capHistoryMessageLength(validHistory, 800)
+            validHistory = contextManager.buildLabeledContext(validHistory, null, { includeTimestamp: true })
 
             // 当前用户信息
-            const currentUserLabel = event?.sender?.card || event?.sender?.nickname || `用户${userId}`
+            const currentUserLabel =
+                event?.sender?.card || event?.sender?.nickname || options.senderName || `用户${userId}`
             const currentUserUin = event?.user_id || userId
+            // 「当前说话人」不再单独注入：用户消息本身已经带 [群名片(QQ)] 前缀，
+            // 再写一遍纯属重复，而且是每轮都变的未命中 token
 
             // 给当前消息也添加用户标签
             userMessage.content = contextManager.addUserLabelToContent(
@@ -961,6 +1126,11 @@ export class ChatService {
                 currentUserLabel,
                 currentUserUin
             )
+            // 「现在几点」放进本轮用户消息：系统提示逐分钟变化会破坏上游 prompt 缓存
+            try {
+                const nowStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+                userMessage.content = contextManager.prependTimeToContent(userMessage.content, nowStr)
+            } catch {}
 
             // 获取群信息
             const groupName = event?.group_name || event?.group?.name || ''
@@ -990,6 +1160,57 @@ export class ChatService {
                 logger.debug(`[ChatService] 群上下文传递已禁用，不携带群聊历史`)
             }
         }
+        // 系统提示体积硬上限：记忆/知识库异常膨胀时截断，避免 token 失控
+        const MAX_SYSTEM_CHARS = 4000
+        if (systemPrompt && systemPrompt.length > MAX_SYSTEM_CHARS) {
+            logger.debug(
+                `[ChatService] 系统提示过长（${systemPrompt.length} 字符），截断到 ${MAX_SYSTEM_CHARS}`
+            )
+            systemPrompt = systemPrompt.slice(0, MAX_SYSTEM_CHARS) + '\n…（后续设定已省略）'
+        }
+        // 按需搜索：消息里出现「搜一下/查一下/最新/新闻」等触发词时先搜一轮，
+        // 结果放进本轮上下文。没命中就完全不请求搜索接口，零开销。
+        try {
+            if (!skipPersona && options.mode === 'chat' && typeof message === 'string') {
+                const searchCfg = config.get('tools.onDemandSearch') || {}
+                const cooldownMs = Math.max(0, Number(searchCfg.cooldownSeconds ?? 300)) * 1000
+                const lastSearchAt = searchCooldownMap.get(conversationId) || 0
+                // cooldownSeconds=0 表示不限制间隔
+                if (cooldownMs === 0 || Date.now() - lastSearchAt >= cooldownMs) {
+                    const { deepseekSearch } = await import('../search/DeepSeekSearch.js')
+                    const searchBlock = await deepseekSearch.buildContextBlock(message)
+                    if (searchBlock) {
+                        priorityContext.unshift(searchBlock)
+                        searchCooldownMap.set(conversationId, Date.now())
+                        logger.mark(`[Chat] 已注入实时搜索结果 ${searchBlock.length} 字`)
+                    }
+                } else {
+                    logger.debug('[Chat] 搜索冷却中，跳过本轮搜索')
+                }
+            }
+        } catch (err) {
+            logger.warn('[ChatService] 按需搜索失败:', err.message)
+        }
+
+        // 动态上下文体积控制（优先级：说话人 > 记忆 > 群记忆 > 知识图谱），并入本轮用户消息
+        const MAX_DYNAMIC_CHARS = 600
+        if (dynamicContext.length > 0 || priorityContext.length > 0) {
+            let dynamicText = priorityContext.join('').slice(0, 800)
+            dynamicContext.forEach((block, idx) => {
+                if (!block) return
+                // 第 0 块是搜索/最优先内容，允许突破软上限
+                if (idx > 0 && dynamicText.length + block.length > MAX_DYNAMIC_CHARS) return
+                dynamicText += block
+            })
+            if (dynamicText.trim()) {
+                const wrap = `【本轮上下文（仅参考，不用复述）】${dynamicText}\n【以上是上下文，下面才是用户的话】\n`
+                if (typeof userMessage.content === 'string') {
+                    userMessage.content = wrap + userMessage.content
+                } else if (Array.isArray(userMessage.content)) {
+                    userMessage.content = [{ type: 'text', text: wrap }, ...userMessage.content]
+                }
+            }
+        }
         let messages = []
         const shouldDisableSystemPrompt = currentPreset?.disableSystemPrompt === true
         const baseSystemPrompt = systemPrompt
@@ -1015,7 +1236,11 @@ export class ChatService {
         enforceMaxCharacters(messages, maxCharacters, 'ChatService')
 
         const hasTools = client.tools && client.tools.length > 0
-        const useStreaming = stream || channelStreaming.enabled === true
+        // 带图请求强制走非流式：流式分支对图片内容块处理不完整，模型会看不到图
+        const hasImageParts = Array.isArray(userMessage.content)
+            ? userMessage.content.some(c => c && (c.type === 'image' || c.type === 'image_url'))
+            : false
+        const useStreaming = !hasImageParts && (stream || channelStreaming.enabled === true)
         logger.debug(
             `[ChatService] Request: model=${llmModel}, stream=${useStreaming}, tools=${hasTools ? client.tools.length : 0}, channelStreaming=${JSON.stringify(channelStreaming)}`
         )

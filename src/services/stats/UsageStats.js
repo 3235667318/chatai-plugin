@@ -236,6 +236,8 @@ class UsageStats {
             isEstimated: record.isEstimated || false, // 标记是否为估算值
             // 记录原始请求（限制大小）
             request: record.request ? this.truncateRequest(record.request) : null,
+            // 响应文本（截断；记忆总结等场景用于排查）
+            responseText: record.responseText ? String(record.responseText).slice(0, 500) : null,
             // 仅失败时记录响应
             response: !isSuccess && record.response ? this.truncateResponse(record.response) : null
         }

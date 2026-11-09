@@ -701,8 +701,9 @@ class MemorySummarizer {
                 }
             }
 
-            // 图谱提取需要 3 条以上消息，对话才刚起步时跳过，避免每轮空跑
-            const graphReady = Array.isArray(messages) && messages.length >= 3
+            // 图谱提取需要 3 条以上消息；且要显式开启（默认关，避免每次总结白跑 2 次 LLM）
+            const graphEnabled = config.get('memory.knowledgeGraphExtraction') === true
+            const graphReady = graphEnabled && Array.isArray(messages) && messages.length >= 3
             if (graphReady) {
                 try {
                     const { knowledgeGraphExtractor } = await import('../storage/KnowledgeGraphExtractor.js')

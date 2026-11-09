@@ -91,7 +91,8 @@ export function buildGroupEnvironmentPrompt(options = {}) {
 
     const lines = ['[当前对话环境]', `群号: ${groupId}`]
     if (groupName) lines.push(`群名: ${groupName}`)
-    lines.push(`${labeledHistory ? '当前发送消息的用户' : '当前用户'}: ${userLabel}(QQ:${userUin})`)
+    // 让模型知道真实当前时间（人设里写的「深夜」之类只是场景，不能当真）
+    // 「当前用户」已移到本轮用户消息的动态上下文里，system 只保留群级稳定信息
 
     if (labeledHistory) {
         lines.push('你正在群聊中与多位用户对话，历史消息可能来自不同的人。')
@@ -100,6 +101,7 @@ export function buildGroupEnvironmentPrompt(options = {}) {
     }
     if (mentionHint) {
         lines.push('消息中的 `[提及用户 QQ:xxx ...]` 是系统对 @ 的展开，附带被@者的QQ号、群名片、昵称等信息。')
+    lines.push('群友聊天里提到的名字、称呼（如“这是龙哥”“某哥”）指的是别人；只有明确 @ 你、引用你、或叫你的名字时，才当成在叫你。')
     }
 
     return `\n\n${lines.join('\n')}`
@@ -738,8 +740,9 @@ export class ContextManager {
             const textIndex = labeled.findIndex(c => c.type === 'text')
             if (textIndex >= 0) {
                 const existingText = labeled[textIndex].text || ''
-                // 在用户标签后插入时间
-                const updated = existingText.replace(/^(\[[^\]]+\])/, `$1[${timeStr}]`)
+                // 已经带过时间戳（[名字(QQ)][HH:MM]:）就不要再插一次
+                const hasTime = /^\[[^\]]+\]\[\d{1,2}:\d{2}\]/.test(existingText)
+                const updated = hasTime ? existingText : existingText.replace(/^(\[[^\]]+\])/, `$1[${timeStr}]`)
                 labeled[textIndex] = { ...labeled[textIndex], text: updated }
             }
             return labeled
@@ -758,20 +761,29 @@ export class ContextManager {
     addUserLabelToContent(content, label, userId) {
         if (!content) return content
 
+        // 已经贴过 `[名字(QQ)]: ` 就不要贴第二遍（否则会变成「[A]: [A]: 内容」）
+        const labeledRe = /^\[[^\]]+\(\d+\)\](?:\[\d{1,2}:\d{2}\])?:\s*/
+
         // 如果是字符串，转换为数组格式
         if (typeof content === 'string') {
+            if (labeledRe.test(content)) return [{ type: 'text', text: content }]
             return [{ type: 'text', text: `[${label}(${userId})]: ${content}` }]
         }
 
-        // 如果是数组，给第一个文本内容添加标签
+        // 如果是数组：先看有没有非空文本段已带标签；空段不当标签载体
         if (Array.isArray(content)) {
-            const labeled = [...content]
+            const labeled = content.filter(c => !(c && c.type === 'text' && !String(c.text || '').trim()))
+            const textParts = labeled.filter(c => c && c.type === 'text')
+            if (textParts.length === 0) {
+                return [{ type: 'text', text: `[${label}(${userId})]: ` }, ...labeled]
+            }
+            if (textParts.some(c => labeledRe.test(String(c.text || '')))) {
+                return labeled
+            }
             const textIndex = labeled.findIndex(c => c.type === 'text')
-            if (textIndex >= 0) {
-                labeled[textIndex] = {
-                    ...labeled[textIndex],
-                    text: `[${label}(${userId})]: ${labeled[textIndex].text || ''}`
-                }
+            labeled[textIndex] = {
+                ...labeled[textIndex],
+                text: `[${label}(${userId})]: ${labeled[textIndex].text || ''}`
             }
             return labeled
         }

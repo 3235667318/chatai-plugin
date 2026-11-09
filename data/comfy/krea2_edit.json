@@ -1,0 +1,94 @@
+{
+ "1": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "Krea2\\Krea2-Turbo-bf16.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {"title": "UNet 加载器（Krea2 Turbo）"}
+ },
+ "2": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen3vl_4b_heretic_int8_convrot.safetensors",
+   "type": "krea2",
+   "device": "default"
+  },
+  "_meta": {"title": "文本/视觉编码器"}
+ },
+ "3": {
+  "class_type": "VAELoader",
+  "inputs": {"vae_name": "qwen_image_vae.safetensors"},
+  "_meta": {"title": "VAE"}
+ },
+ "4": {
+  "class_type": "LoadImage",
+  "inputs": {"image": "example.png"},
+  "_meta": {"title": "参考图"}
+ },
+ "5": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": ["4", 0],
+   "upscale_method": "lanczos",
+   "width": 768,
+   "height": 1152,
+   "crop": "disabled"
+  },
+  "_meta": {"title": "等比缩放（插件按原图尺寸填充）"}
+ },
+ "6": {
+  "class_type": "VAEEncode",
+  "inputs": {"pixels": ["5", 0], "vae": ["3", 0]},
+  "_meta": {"title": "参考图 -> latent"}
+ },
+ "7": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {"clip": ["2", 0], "text": ""},
+  "_meta": {"title": "编辑指令（插件注入）"}
+ },
+ "8": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {"conditioning": ["7", 0]},
+  "_meta": {"title": "负向零化"}
+ },
+ "9": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": ["1", 0],
+   "seed": 0,
+   "steps": 8,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": ["7", 0],
+   "negative": ["8", 0],
+   "latent_image": ["6", 0],
+   "denoise": 0.88
+  },
+  "_meta": {"title": "KSampler（denoise 由插件注入）"}
+ },
+ "10": {
+  "class_type": "VAEDecode",
+  "inputs": {"samples": ["9", 0], "vae": ["3", 0]},
+  "_meta": {"title": "VAE 解码"}
+ },
+ "11": {
+  "class_type": "BSK_SaveImage",
+  "inputs": {
+   "images": ["10", 0],
+   "filename_prefix": "play/krea2edit_%timestamp%",
+   "save_as_jpg": true,
+   "jpg_quality": 92,
+   "embed_workflow_in_png": false,
+   "save_workflow": false,
+   "save_txt": false,
+   "other_text": "",
+   "denoise_bilateral": false,
+   "denoise_diameter": 9,
+   "denoise_sigma_color": 75,
+   "denoise_sigma_space": 75
+  },
+  "_meta": {"title": "保存"}
+ }
+}

@@ -347,10 +347,12 @@ router.get('/config', groupAdminAuth, async (req, res) => {
 
         // 获取表情统计
         let emojiStats = { total: 0, images: [] }
+        let emojiEffective = null
         try {
             const { emojiThiefService } = await import('../../../apps/EmojiThief.js')
             const groupIdStr = String(groupId)
             const config = await emojiThiefService.getGroupConfig(groupIdStr)
+            emojiEffective = config
             const emojiPath = emojiThiefService.getEmojiDir(groupIdStr, config.separateFolder)
 
             if (emojiPath && fs.existsSync(emojiPath)) {
@@ -383,7 +385,9 @@ router.get('/config', groupAdminAuth, async (req, res) => {
                 eventHandler: settings.eventEnabled,
                 // 表情小偷
                 emojiThief: {
-                    enabled: settings.emojiThiefEnabled,
+                    // 返回实际生效值（全局开关 + 白名单 + 群覆盖），页面不再只显示“继承”
+                    enabled: emojiEffective ? emojiEffective.enabled : settings.emojiThiefEnabled === true,
+                    inherit: settings.emojiThiefEnabled === undefined,
                     independent: settings.emojiThiefSeparateFolder ?? true,
                     maxCount: settings.emojiThiefMaxCount ?? 500,
                     probability: settings.emojiThiefStealRate ? Math.round(settings.emojiThiefStealRate * 100) : 100,

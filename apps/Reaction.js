@@ -8,6 +8,8 @@ import { getBotIds } from '../src/utils/messageDedup.js'
 import { parseReactionEvent, getUserNickname, getOriginalMessage, sendGroupMessage } from '../src/utils/eventAdapter.js'
 import { galgameService } from '../src/services/galgame/GalgameService.js'
 import { getAIResponse } from '../src/utils/common.js'
+import { segment } from '../src/utils/messageParser.js'
+import { convertAtMentions } from '../src/utils/mentionAt.js'
 import { StandardBotApi } from '../src/core/platform/index.js'
 
 const EMOJI_MAP = {
@@ -393,6 +395,8 @@ async function handleReactionEvent(e, bot) {
             .replace(/\{group_id\}/g, String(groupId || ''))
 
         const aiReply = await getAIResponse(eventDesc, {
+            event: e,
+            senderName: typeof nickname !== 'undefined' ? nickname : '',
             userId,
             groupId: groupId,
             maxLength: 50,
@@ -402,7 +406,7 @@ async function handleReactionEvent(e, bot) {
         })
 
         if (aiReply && groupId) {
-            await sendGroupMessage(bot, groupId, aiReply)
+            await sendGroupMessage(bot, groupId, convertAtMentions(aiReply, { bot, groupId, segment }))
         }
     } catch (err) {
         logger.error('[AI-Reaction] 处理reaction事件失败:', err)

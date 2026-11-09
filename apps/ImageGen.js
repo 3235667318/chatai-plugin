@@ -1,4 +1,5 @@
 import config from '../config/config.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
 import { segment, MessageApi } from '../src/utils/messageParser.js'
 import fs from 'fs'
 import path from 'path'
@@ -304,8 +305,17 @@ export class ImageGen extends plugin {
         // 初始化预设管理器
         presetMgr.init().catch(err => logger.warn('[ImageGen] 预设初始化失败:', err.message))
 
-        /* 读取自定义前缀配置，动态生成触发规则 */
-        const customPrefix = config.get('features.imageGen.customPrefix') || ''
+        /* 读取自定义前缀配置（支持逗号/顿号/空格分隔多个），动态生成触发规则 */
+        const rawCustomPrefix = config.get('features.imageGen.customPrefix') || ''
+        const customPrefixes = [
+            ...new Set(
+                String(rawCustomPrefix)
+                    .split(/[,，、\s]+/)
+                    .map(p => p.trim())
+                    .filter(Boolean)
+            )
+        ]
+        const customPrefix = customPrefixes[0] || ''
         const rules = [
             { reg: /^#?文生图\s*(.+)$/s, fnc: 'text2img' },
             { reg: /^#?图生图\s*(.*)$/s, fnc: 'img2img' },
@@ -317,11 +327,12 @@ export class ImageGen extends plugin {
             { reg: /^#?(更新预设|更新焚决|刷新预设|重载预设)$/i, fnc: 'updatePresets' },
             { reg: /^#?(绘图模型|画图模型|设置绘图模型|切换绘图模型)\s*(.*)$/i, fnc: 'setModel' }
         ]
-        /* 自定义前缀触发：如配置了 customPrefix，添加 「前缀+描述」 触发绘图的规则 */
-        if (customPrefix) {
-            const escaped = customPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-            rules.unshift({ reg: new RegExp(`^${escaped}\\s*(.+)$`, 's'), fnc: 'customPrefixDraw' })
-        }
+        /* 自定义前缀触发：每个前缀各加一条 「前缀+描述」 规则 */
+        const prefixRules = customPrefixes.map(prefix => {
+            const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            return { reg: new RegExp(`^${escaped}\\s*(.+)$`, 's'), fnc: 'customPrefixDraw' }
+        })
+        if (prefixRules.length > 0) rules.unshift(...prefixRules)
 
         super({
             name: 'AI-ImageGen',
@@ -331,6 +342,7 @@ export class ImageGen extends plugin {
             rule: rules
         })
 
+        this.customPrefixes = customPrefixes
         this.customPrefix = customPrefix
         this.timeout = config.get('features.imageGen.timeout') || 600000
         this.maxImages = config.get('features.imageGen.maxImages') || 3
@@ -354,6 +366,7 @@ export class ImageGen extends plugin {
      * @returns {Promise<boolean>}
      */
     async isImageGenEnabled() {
+        if (isIgnoredBot(this.e)) return false
         const e = this.e
         const globalEnabled = config.get('features.imageGen.enabled') !== false
 
@@ -460,7 +473,9 @@ export class ImageGen extends plugin {
             '  #图生视频 [描述] - 根据图片生成视频'
         ]
         /* 自定义前缀提示 */
-        const cfgPrefix = config.get('features.imageGen.customPrefix')
+        const cfgPrefix = this.customPrefixes?.length
+            ? this.customPrefixes.join(' / ')
+            : config.get('features.imageGen.customPrefix')
         if (cfgPrefix) {
             helpLines.push(`  ${cfgPrefix} [描述] - 快捷绘图（有图时自动图生图）`)
         }
@@ -788,17 +803,28 @@ export class ImageGen extends plugin {
             return false
         }
 
-        const prefix = this.customPrefix
-        if (!prefix) return false
+        const prefixes = this.customPrefixes?.length ? this.customPrefixes : this.customPrefix ? [this.customPrefix] : []
+        if (prefixes.length === 0) return false
+        const prefix = prefixes.find(p => String(e.msg || '').startsWith(p)) || prefixes[0]
 
         const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         const prompt = e.msg.replace(new RegExp(`^${escaped}\\s*`, 's'), '').trim()
+        if (prompt) {
+            // 前缀后面是预设关键词时，优先走预设（保留手办化/表情包等模板效果）
+            const matchedPreset = presetMgr.findPreset(prompt)
+            if (matchedPreset) {
+                logger.debug('[ImageGen] 前缀命中预设:', matchedPreset.keywords)
+                this.e.msg = prompt
+                return this.presetHandler()
+            }
+        }
         if (!prompt) {
             await e.reply(`请输入图片描述，例如：${prefix} 一只可爱的猫咪`, true)
             return true
         }
 
-        const imageUrls = await this.getAllImages(e)
+        // 前缀绘图：只有真正附带/引用的图片才算参考图，不拿头像兜底
+        const imageUrls = await this.getAllImages(e, { includeAvatar: false })
         const genType = imageUrls.length > 0 ? 'img2img' : 'text2img'
         const recallDelay = this.getRecallDelay(60)
         await e.reply(`正在${genType === 'img2img' ? '重绘' : '生成'}图片，请稍候...`, true, { recallMsg: recallDelay })
@@ -954,6 +980,10 @@ export class ImageGen extends plugin {
      * 预设提示词处理（动态匹配）
      */
     async presetHandler() {
+        // ComfyDraw 的命令由 AI-ComfyDraw 处理，这里不要重复出图
+        if (/^#?(反推画|反推|识图|图生文|绘图|画图|改图|重绘)(\s|$)/.test(String(this.e?.msg || '').trim())) {
+            return false
+        }
         const e = this.e
 
         if (!(await this.isImageGenEnabled())) {
@@ -1534,16 +1564,61 @@ export class ImageGen extends plugin {
             logger.info(`[ImageGen] generateImage: 全局通用模型=${globalModel}, genType=${genType}`)
         }
 
-        const result = await this.callGenApi({
-            prompt,
-            imageUrls,
-            requestOptions: options,
-            getApiConfig: idx => this.getImageApiConfig(idx, overrideModel, genType),
-            extractResult: data => this.extractImages(data),
-            maxEmptyRetries: 2,
-            retryDelay: 1000,
-            logPrefix: '图片生成'
-        })
+        let result
+        try {
+            result = await this.callGenApi({
+                prompt,
+                imageUrls,
+                requestOptions: options,
+                getApiConfig: idx => this.getImageApiConfig(idx, overrideModel, genType),
+                extractResult: data => this.extractImages(data),
+                maxEmptyRetries: 2,
+                retryDelay: 1000,
+                logPrefix: '图片生成'
+            })
+        } catch (err) {
+            logger.warn(`[ImageGen] API 调用异常，准备降级: ${err.message}`)
+            result = { success: false, error: err.message }
+        }
+
+        // 原绘图 API 不可用时（超时/5xx/Cloudflare 530）自动降级到本地 ComfyUI
+        if (
+            !result?.success &&
+            config.get('features.imageGen.comfyFallback') !== false &&
+            config.get('features.comfyDraw.enabled') !== false
+        ) {
+            try {
+                const { comfyDrawService } = await import('../src/services/media/ComfyUIService.js')
+                let imageBuffer = null
+                if (imageUrls.length > 0) imageBuffer = await this._getImageBuffer(imageUrls[0])
+                // 尺寸：提示词里的 1024x768 > 方图关键词 > imageGen.size 配置 > 默认
+                const sizeMatch = /(?:^|\s)(\d{2,4})\s*[x×*]\s*(\d{2,4})(?=\s|$)/i.exec(prompt)
+                const sizeCfg = String(config.get('features.imageGen.size') || '').trim()
+                const fallbackSize = sizeMatch
+                    ? `${sizeMatch[1]}x${sizeMatch[2]}`
+                    : /(方图|正方形|方形)/.test(prompt)
+                      ? '1024x1024'
+                      : sizeCfg || undefined
+                const cleanPrompt = sizeMatch ? prompt.replace(sizeMatch[0], ' ').trim() : prompt
+                const buffers = await comfyDrawService.generate({
+                    prompt: cleanPrompt,
+                    imageBuffer,
+                    count: 1,
+                    size: fallbackSize
+                })
+                if (buffers.length > 0) {
+                    logger.mark(`[ImageGen] 已用 ComfyUI 兜底出图 ${buffers.length} 张`)
+                    return {
+                        success: true,
+                        images: buffers.map(b => `base64://${b.toString('base64')}`),
+                        duration: 0,
+                        apiUsed: 'comfyui'
+                    }
+                }
+            } catch (fallbackErr) {
+                logger.warn('[ImageGen] ComfyUI 兜底失败:', fallbackErr.message)
+            }
+        }
 
         return result.success
             ? { success: true, images: result.result, duration: result.duration, apiUsed: result.apiUsed }
@@ -2368,7 +2443,7 @@ export class ImageGen extends plugin {
             await this.sendResult(e, result)
         }
     }
-    async getAllImages(e) {
+    async getAllImages(e, { includeAvatar = true } = {}) {
         const urls = []
         const bot = e.bot || globalThis.Bot
 
@@ -2546,8 +2621,8 @@ export class ImageGen extends plugin {
             }
         }
 
-        // 只有在没有其他图片时，才添加@用户头像
-        if (urls.length === 0) {
+        // 只有在没有其他图片时，才添加@用户头像（可选，前缀绘图用不到）
+        if (includeAvatar && urls.length === 0) {
             for (const m of msgArray) {
                 if (m.type === 'at') {
                     const qq = m.qq || m.data?.qq
@@ -2565,7 +2640,7 @@ export class ImageGen extends plugin {
 
         // 回退到发送者头像
         const hasQuote = !!(e.getReply || e.source || e.reply_id)
-        if (urls.length === 0 && !hasQuote && e.user_id) {
+        if (includeAvatar && urls.length === 0 && !hasQuote && e.user_id) {
             // 使用统一的头像获取接口
             const senderAvatar = getAvatarUrl(e, e.user_id, 640)
             if (senderAvatar) {

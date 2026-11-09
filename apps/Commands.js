@@ -10,6 +10,7 @@ import { renderService } from '../src/services/media/RenderService.js'
 import { channelManager } from '../src/services/llm/ChannelManager.js'
 import { presetManager } from '../src/services/preset/PresetManager.js'
 import { usageStats } from '../src/services/stats/UsageStats.js'
+import { redisClient } from '../src/core/cache/RedisClient.js'
 import { LlmService } from '../src/services/llm/LlmService.js'
 import { ensureScopeManager, isGroupFeatureEnabled, getGroupFeatureModel } from '../src/services/scope/ScopeManager.js'
 import { isMaster } from '../src/utils/platformAdapter.js'
@@ -199,6 +200,10 @@ export class AICommands extends plugin {
                 {
                     reg: '^#(总结记忆|记忆总结|整理记忆)$',
                     fnc: 'summarizeMemory'
+                },
+                {
+                    reg: '^#(今日用量|用量统计|token用量|今日token)$',
+                    fnc: 'todayUsage'
                 },
                 {
                     reg: '^#(今日词云|词云|群词云)$',
@@ -1855,6 +1860,98 @@ ${rawChatHistory}`
      * 今日词云分析
      * #今日词云 / #词云 / #群词云
      */
+    /**
+     * #今日用量 / #用量统计
+     * 汇总今天所有 API 调用、token、缓存命中、搜索次数与估算花费
+     */
+    async todayUsage() {
+        const e = this.e
+        try {
+            if (!(isMaster(e.user_id || e.sender?.user_id) || e.isMaster)) {
+                await this.reply('只有主人可以查看用量统计', true)
+                return true
+            }
+            await usageStats.init()
+            await redisClient.init()
+            // init 只是发起连接，等 ready 再读，否则 lrange 会直接返回空
+            for (let i = 0; i < 40 && !redisClient.isConnected; i++) {
+                await new Promise(r => setTimeout(r, 50))
+            }
+            const start = new Date()
+            start.setHours(0, 0, 0, 0)
+            const startTime = start.getTime()
+
+            const records = await usageStats.getRecent(10000, { startTime })
+            const today = records.filter(r => r.timestamp >= startTime)
+
+            const calls = today.length
+            const input = today.reduce((a, r) => a + (Number(r.inputTokens) || 0), 0)
+            const cache = today.reduce((a, r) => a + (Number(r.cacheReadTokens) || 0), 0)
+            const output = today.reduce((a, r) => a + (Number(r.outputTokens) || 0), 0)
+            const missTok = Math.max(0, input - cache)
+
+            // 搜索/抓取：DeepSeek Search/Fetch 按成功请求计费（¥5 / 1000 次）
+            let searches = 0
+            let fetches = 0
+            try {
+                const day = new Date().toLocaleDateString('sv-SE')
+                const hash = await redisClient.hgetall(`chaite:tools_daily:${day}`)
+                for (const [name, n] of Object.entries(hash || {})) {
+                    const count = Number(n) || 0
+                    if (/search|wiki|baike|hot/i.test(name)) searches += count
+                    else if (/fetch/i.test(name)) fetches += count
+                }
+            } catch {}
+
+            // DeepSeek 现行价格（元/百万 token）：[空闲时段, 高峰时段]
+            // 高峰：北京时间周一至周五 9:00-12:00、14:00-18:00；其余时间半价
+            const PRICES = {
+                flash: { miss: [1, 2], cache: [0.02, 0.04], out: [4, 8] },
+                pro: { miss: [4.5, 9], cache: [0.15, 0.3], out: [13.5, 27] }
+            }
+            const isPeakHour = timestamp => {
+                const d = new Date(timestamp)
+                const day = d.getDay()
+                if (day === 0 || day === 6) return false
+                const hour = d.getHours() + d.getMinutes() / 60
+                return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
+            }
+            const priceOf = (model, timestamp) => {
+                const name = String(model || '').toLowerCase()
+                const table = name.includes('pro') ? PRICES.pro : PRICES.flash
+                const idx = isPeakHour(timestamp) ? 1 : 0
+                return { miss: table.miss[idx], cache: table.cache[idx], out: table.out[idx] }
+            }
+
+            // 逐条按调用时刻的峰谷价与模型单价计算，reasoning 已包含在 outputTokens 内
+            let tokenCost = 0
+            for (const r of today) {
+                const p = priceOf(r.model, r.timestamp)
+                const cin = Number(r.inputTokens) || 0
+                const cch = Number(r.cacheReadTokens) || 0
+                const cout = Number(r.outputTokens) || 0
+                const cmiss = Math.max(0, cin - cch)
+                tokenCost += (cmiss * p.miss + cch * p.cache + cout * p.out) / 1_000_000
+            }
+            const toolCost = (searches + fetches) * 0.005
+            const cost = tokenCost + toolCost
+            const cachePct = input > 0 ? Math.round((cache / input) * 100) : 0
+
+            const lines = [
+                '今日用量～',
+                `调用 ${calls} 次，输入 ${input} token（缓存命中 ${cache}，${cachePct}%），输出 ${output}`,
+                `搜索 ${searches} 次`,
+                `估算花费：约 ¥${cost.toFixed(2)}（按峰谷价）`
+            ]
+            await this.reply(lines.join('\n'), true)
+            return true
+        } catch (err) {
+            logger.error('[AI-Commands] 今日用量统计失败:', err.message)
+            await this.reply('❌ 统计失败: ' + err.message, true)
+            return true
+        }
+    }
+
     async todayWordCloud() {
         const e = this.e
         if (!e.group_id) {

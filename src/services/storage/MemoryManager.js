@@ -38,7 +38,24 @@ const POLL_KV_PREFIX = 'memory:poll:last:'
  * @param {string} [options.analysisTypes] - 分析维度描述，缺省为“用户特征、话题、关系”
  * @returns {string} 完整提示词
  */
-function buildGroupMemoryPrompt(options = {}) {
+/**
+ * 构建群聊记忆的 system / user 两段提示词。
+ *
+ * system 只放固定指令与输出格式，跨群、跨轮次完全一致，便于命中上下文缓存；
+ * user 放本次的记录范围、分析维度、条数上限、现有记忆与群聊记录。
+ *
+ * 输出格式与 analyzeGroupContext / summarizeGroupMemoryByTimeRange 中的
+ * 【用户:昵称】【话题】【关系】解析正则严格耦合，禁止改动括号与标签文字。
+ *
+ * @param {Object} options - 构建选项
+ * @param {string} options.dialogText - 群聊记录文本，每行形如 `[昵称]: 内容`
+ * @param {string} options.existingMemoryText - 现有记忆文本，无则传空串
+ * @param {number} options.maxItems - 输出条数上限
+ * @param {string} [options.scopeHint] - 记录范围描述，如“过去30分钟内的120条消息”
+ * @param {string} [options.analysisTypes] - 分析维度描述，缺省为“用户特征、话题、关系”
+ * @returns {{system: string, user: string}} 两段提示词
+ */
+function buildGroupMemoryPrompts(options = {}) {
     const {
         dialogText,
         existingMemoryText,
@@ -47,27 +64,23 @@ function buildGroupMemoryPrompt(options = {}) {
         analysisTypes = '用户特征、话题、关系'
     } = options
 
-    return `你是群聊记忆管理专家。分析${scopeHint}，提取值得长期保留的信息。
+    const system = `你是群聊记忆管理专家。分析用户消息中给出的【群聊记录】，提取值得长期保留的信息。
 
 【重要规则】
 - 每条消息格式为 [昵称]: 内容，方括号里的昵称就是该用户的群名片
 - 只记录用户自己说出口的具体信息，不要从语气、话题或他人发言推测
 - 按昵称区分用户，不要把不同人的信息混到一起
 - 忽略无实质内容的日常对话（如“哈哈”“好的”“在吗”）
-
-【分析维度】${analysisTypes}
-
-【现有记忆】
-${existingMemoryText || '暂无'}
-
-【群聊记录】
-${dialogText}
+- 不记录：游戏进度/数值/装备/关卡、指令用法、余额/用量统计、文件分享、抽奖签到、刷屏内容
+- 只记录群层面的长期信息：群规则、固定活动、长期项目、约定、群梗和黑话、成员关系
+- 【话题】必须是能长期复用的主题（例如“每周五晚群内开黑”），不能是某一次游戏战况
+- 没有任何长期信息时，只输出一个“无”，不要硬凑
 
 【总结要求】
-1. 把现有记忆与新记录合并成一份完整记忆，删除重复、过时或已被推翻的条目
+1. 把用户消息里的【现有记忆】与新记录合并成一份完整记忆，删除重复、过时或已被推翻的条目
 2. 用户信息必须写明是谁，例如“小明喜欢打游戏”，不能写“有人喜欢打游戏”
 3. 话题必须是具体主题，例如“讨论原神3.0版本”，不能写“聊游戏”
-4. 关系必须写明双方，例如“小明和小红是好友”
+4. 关系必须写明双方，例如“小明和小红是好友”；称呼类关系必须写清方向，例如“虚心叫清华得不到的学生‘糖糖姐姐’”，不要写反
 5. 不要输出分析过程、小标题或编号，只输出结果行
 
 【输出格式】
@@ -76,8 +89,36 @@ ${dialogText}
 【话题】具体话题内容
 【关系】A和B：关系描述
 
-最多${maxItems}条。没有任何值得记录的信息时，只输出一个字：无`
+条数上限以用户消息中的【条数上限】为准。没有任何值得记录的信息时，只输出一个字：无`
+
+    const user = `【记录范围】${scopeHint}
+【分析维度】${analysisTypes}
+【条数上限】${maxItems}
+【现有记忆】
+${existingMemoryText || '暂无'}
+【群聊记录】
+${dialogText}`
+
+    return { system, user }
 }
+
+/**
+ * 兼容旧调用：把 system / user 拼成单条字符串。
+ * 新链路请直接用 buildGroupMemoryPrompts，让固定指令走 system 以命中缓存。
+ */
+/** 临时/游戏进度类记忆特征：只保留长期稳定信息 */
+const TRANSIENT_MEMORY_RE =
+    /(提到|要求|在群内|进度|选择|境界|锁妖|开箱|箱子|第\s*\d+\s*层|\d+\s*号箱|挂机|挂自动|自动出招|答题|上香|重启|好感|饱食|水质|配饰|血量|蓝量|战力|签到|抽卡|刷到|打了|开了|败了|搞不起)/
+
+function isTransientMemory(content) {
+    return TRANSIENT_MEMORY_RE.test(String(content || ''))
+}
+
+function buildGroupMemoryPrompt(options = {}) {
+    const { system, user } = buildGroupMemoryPrompts(options)
+    return `${system}\n\n${user}`
+}
+
 
 /**
  * @class MemoryManager
@@ -268,6 +309,8 @@ export class MemoryManager {
         }
 
         // 同时持久化到数据库（用于群聊总结的保底数据）
+        // groupContext 关闭后不再落库，避免无人使用的 group_summary_* 白占磁盘
+        if (config.get('memory.groupContext.enabled') === false) return
         try {
             databaseService.init()
             const conversationId = `group_summary_${groupId}`
@@ -317,8 +360,8 @@ export class MemoryManager {
             if (groupConfig.extractTopics) analysisTypes.push('讨论话题')
             if (groupConfig.extractRelations) analysisTypes.push('社交关系')
 
-            // 覆盖式总结prompt，与 summarizeGroupMemoryByTimeRange 共用同一份模板
-            const prompt = buildGroupMemoryPrompt({
+            // 覆盖式总结提示词：固定指令走 system 命中缓存，数据走 user
+            const { system: groupMemorySystem, user: groupMemoryUser } = buildGroupMemoryPrompts({
                 dialogText,
                 existingMemoryText,
                 maxItems: 15,
@@ -333,11 +376,12 @@ export class MemoryManager {
             const _temp = resolveClientTemperature(client, 0.3)
             const result = await this._sendMemoryLlm(
                 client,
-                { role: 'user', content: [{ type: 'text', text: prompt }] },
+                { role: 'user', content: [{ type: 'text', text: groupMemoryUser }] },
                 {
                     model,
                     maxToken: 600,
                     disableHistorySave: true,
+                    systemOverride: groupMemorySystem,
                     ...(_temp !== undefined ? { temperature: _temp } : {})
                 },
                 'MemoryGroupContext'
@@ -358,7 +402,13 @@ export class MemoryManager {
                     groupId,
                     responseText,
                     apiUsage: result.usage,
-                    request: { messages: [{ role: 'user', content: prompt }], model },
+                    request: {
+                        messages: [
+                            { role: 'system', content: groupMemorySystem },
+                            { role: 'user', content: groupMemoryUser }
+                        ],
+                        model
+                    },
                     response: !recordSuccess ? { error: '响应为空' } : null
                 })
             } catch (e) {
@@ -379,9 +429,10 @@ export class MemoryManager {
                 // 过滤无效行
                 if (this._isInvalidMemoryLine(line)) continue
 
-                // 提取用户记忆
+                // 提取用户记忆（extractUserInfo 关闭时不保存）
                 const userMatch = line.match(/【用户[:：](.+?)】(.+)/)
                 if (userMatch) {
+                    if (!groupConfig.extractUserInfo) continue
                     const nickname = userMatch[1].trim()
                     const info = userMatch[2].trim()
                     if (info.length > 3 && info.length < 100) {
@@ -393,19 +444,21 @@ export class MemoryManager {
                     continue
                 }
 
-                // 提取话题记忆
+                // 提取话题记忆（extractTopics 关闭时不保存，并过滤游戏/刷屏类话题）
                 const topicMatch = line.match(/【话题】(.+)/)
                 if (topicMatch) {
+                    if (!groupConfig.extractTopics) continue
                     const topic = topicMatch[1].trim()
-                    if (topic.length > 3 && topic.length < 100) {
+                    if (topic.length > 3 && topic.length < 100 && !isTransientMemory(topic)) {
                         newTopics.push(topic)
                     }
                     continue
                 }
 
-                // 提取关系记忆
+                // 提取关系记忆（extractRelations 关闭时不保存）
                 const relationMatch = line.match(/【关系】(.+)/)
                 if (relationMatch) {
+                    if (!groupConfig.extractRelations) continue
                     const relation = relationMatch[1].trim()
                     if (relation.length > 3 && relation.length < 100) {
                         newRelations.push(relation)
@@ -613,6 +666,8 @@ export class MemoryManager {
             const now = Date.now()
 
             for (const conv of conversations) {
+                // group_summary_* 是群消息缓冲，不是用户，喂给记忆总结纯属烧钱
+                if (typeof conv.id === 'string' && conv.id.startsWith('group_summary_')) continue
                 const sharedGroupConversation = typeof conv.id === 'string' && /^group:[^:]+$/.test(conv.id)
                 const targets = []
 
@@ -661,7 +716,8 @@ export class MemoryManager {
                     if (convTime <= lastPoll) continue
 
                     // 共享群携带精确 groupId，使 listUserConversations 只读取当前群并按 sender 归属轮次。
-                    await this.analyzeUserConversations(target.userId, target.options)
+                    // since 让总结只看游标之后的新消息，避免每轮重复总结旧上下文
+                    await this.analyzeUserConversations(target.userId, { ...(target.options || {}), since: lastPoll })
                     this.lastPollTime.set(target.pollKey, now)
                     this._capTimeMap(this.lastPollTime)
                     try {
@@ -714,12 +770,15 @@ export class MemoryManager {
             let recentConv = null
             let messages = []
             for (const conversation of conversations) {
-                const userMessages = databaseService.getMessagesForUser(conversation.conversationId, userId, 30)
+                const isGroupConv = String(conversation.conversationId || '').startsWith('group:')
+                const convMessages = isGroupConv
+                    ? databaseService.getMessages(conversation.conversationId, 30)
+                    : databaseService.getMessagesForUser(conversation.conversationId, userId, 30)
                 if (
-                    userMessages.filter(message => message.role === 'user' || message.role === 'assistant').length >= 2
+                    convMessages.filter(message => message.role === 'user' || message.role === 'assistant').length >= 2
                 ) {
                     recentConv = conversation
-                    messages = userMessages
+                    messages = convMessages
                     break
                 }
             }
@@ -732,10 +791,28 @@ export class MemoryManager {
             }
 
             const isGroupConversation = recentConv.conversationId.startsWith('group:')
+
+            // 只保留游标之后的新消息，避免每 2 小时重复总结同一段旧上下文
+            const since = Number(options?.since) || 0
+            if (since > 0) {
+                messages = messages.filter(m => Number(m.timestamp || 0) > since)
+            }
+            if (messages.length === 0) {
+                return { success: false, error: '游标之后没有新消息', reason: 'no_new_messages' }
+            }
+
+            // 群聊消息里可能包着 bym 的【最近群聊记录】/【本轮上下文】块，剥掉后再判断内容量
+            const cleanContent = text =>
+                String(text || '')
+                    .replace(/【最近群聊记录】[\s\S]*?(?:请基于以上聊天记录[^\n]*|$)/g, ' ')
+                    .replace(/【本轮上下文[^\n]*】[\s\S]*?【以上是上下文[^\n]*】/g, ' ')
+                    .trim()
+
+            let cleanedChars = 0
             const dialogText = messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(m => {
-                    const content = Array.isArray(m.content)
+                    const raw = Array.isArray(m.content)
                         ? m.content
                               .filter(c => c.type === 'text')
                               .map(c => c.text)
@@ -743,12 +820,27 @@ export class MemoryManager {
                         : typeof m.content === 'string'
                           ? m.content
                           : ''
-                    return `${m.role === 'user' ? '用户' : '助手'}: ${content.substring(0, 200)}`
+                    const content = cleanContent(raw)
+                    if (content.length < 2) return ''
+                    cleanedChars += content.length
+                    if (m.role === 'assistant') return `助手: ${content.substring(0, 200)}`
+                    const senderId = String(m.sender?.user_id ?? m.sender?.userId ?? m.userId ?? '')
+                    if (isGroupConversation) {
+                        // 群聊里归属不明（旧记录无 sender）的消息直接丢弃，避免把群友的话记到用户头上
+                        if (!senderId) return ''
+                        if (senderId !== String(userId)) {
+                            const name = m.sender?.card || m.sender?.nickname || senderId
+                            return `群友[${name}]: ${content.substring(0, 200)}`
+                        }
+                    }
+                    return `用户: ${content.substring(0, 200)}`
                 })
+                .filter(Boolean)
                 .join('\n')
 
-            if (dialogText.length < 50) {
-                return { success: false, error: '可总结的对话内容不足', reason: 'insufficient_content' }
+            // 群友聊天也算触发，但清洗后完全没有内容就不调用 LLM
+            if (cleanedChars < 10 || dialogText.length < 10) {
+                return { success: false, error: '新消息没有有效内容，跳过总结', reason: 'insufficient_content' }
             }
 
             // 获取现有记忆用于合并总结
@@ -758,9 +850,9 @@ export class MemoryManager {
             const botName = global.Bot?.nickname || config.get('basic.botName') || '助手'
             const contextHint = isGroupConversation
                 ? `这是【群聊】中的对话记录。
-- "用户:"后面是与机器人直接对话的那个人说的话
-- 消息中的[某某]:xxx格式表示其他群友的发言，不是当前用户
-- 只提取与机器人直接对话的"用户"本人透露的信息
+- "用户:"后面是本次要总结的那个人说的话
+- "群友[名字]:"是群里其他人的发言，只作为话题背景，不是当前用户
+- 只提取与"用户:"本人透露的信息
 - 不要把其他群友的信息当成当前用户的信息`
                 : `这是【私聊】对话。"用户:"后面是用户本人说的话。`
 
@@ -790,6 +882,9 @@ ${dialogText}
 1. 合并现有记忆和新信息，删除重复、过时或已被推翻的条目
 2. 每条必须是用户明确说过的具体事实，不超过50字
 3. 全部用中文书写
+4. 只保留长期稳定的信息：身份、所在地、职业、长期偏好、人际关系、计划、雷点
+5. 不要记录游戏进度/数值/装备、一次性操作、群内打招呼、开关设置、临时状态
+6. 不要以“用户提到…”“用户要求…”“用户选择…”开头
 
 【输出格式（必须严格遵守）】
 每行一条记忆，最多10条。
@@ -871,8 +966,18 @@ ${dialogText}
                 return { success: false, error: '总结结果没有可保存的记忆条目', reason: 'invalid_summary' }
             }
 
+            // 写入前过滤临时/游戏进度类内容
+            const durableMemories = newMemories.filter(m => !isTransientMemory(m))
+            if (durableMemories.length === 0) {
+                logger.debug('[MemoryManager] 总结结果全部为临时内容，跳过写入')
+                return { success: false, error: '总结结果均为临时内容', reason: 'all_transient' }
+            }
+            if (durableMemories.length !== newMemories.length) {
+                logger.debug(`[MemoryManager] 过滤临时记忆 ${newMemories.length - durableMemories.length} 条`)
+            }
+
             // 覆盖式替换：清除旧记忆，保存新记忆
-            const replaced = await this.replaceUserMemories(userId, newMemories, 'poll_summary', { groupId })
+            const replaced = await this.replaceUserMemories(userId, durableMemories, 'poll_summary', { groupId })
             if (!replaced) {
                 return { success: false, error: '写入总结结果失败', reason: 'replace_failed' }
             }
@@ -1085,7 +1190,8 @@ ${existingMemoryList || '暂无'}
             if (!responseText || responseText === '无' || responseText.length < 5) return null
 
             // 解析并覆盖替换记忆
-            const newMemories = this._parseMemoryResponse(responseText)
+            let newMemories = this._parseMemoryResponse(responseText)
+            newMemories = newMemories.filter(m => !isTransientMemory(m))
             if (newMemories.length > 0) {
                 await this.replaceUserMemories(userId, newMemories, 'auto_extract', options)
                 logger.debug(`[MemoryManager] 自动提取并合并记忆: ${newMemories.length}条`)
@@ -1555,8 +1661,8 @@ ${existingMemoryList || '暂无'}
             const timeRangeMinutes = Math.round(timeRange / 60000)
             const dialogText = allMessages.map(m => `[${m.nickname}]: ${m.content.substring(0, 150)}`).join('\n')
 
-            // 6. 构建总结prompt，与 analyzeGroupContext 共用同一份模板
-            const prompt = buildGroupMemoryPrompt({
+            // 6. 构建总结提示词：固定指令走 system 命中缓存，数据走 user
+            const { system: timeRangeSystem, user: timeRangeUser } = buildGroupMemoryPrompts({
                 dialogText,
                 existingMemoryText,
                 maxItems: 20,
@@ -1573,11 +1679,12 @@ ${existingMemoryList || '暂无'}
             const _temp4 = resolveClientTemperature(client, 0.3)
             const result = await this._sendMemoryLlm(
                 client,
-                { role: 'user', content: [{ type: 'text', text: prompt }] },
+                { role: 'user', content: [{ type: 'text', text: timeRangeUser }] },
                 {
                     model: usedModel,
                     maxToken: 800,
                     disableHistorySave: true,
+                    systemOverride: timeRangeSystem,
                     ...(_temp4 !== undefined ? { temperature: _temp4 } : {})
                 },
                 'MemoryTimeRange'

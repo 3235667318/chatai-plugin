@@ -243,6 +243,19 @@ class KnowledgeGraphExtractor {
             event: null,
             source: caller || 'KGExtractor'
         })
+        try {
+            const { statsService } = await import('../stats/StatsService.js')
+            await statsService.recordApiCall({
+                channelId: result.usedChannel?.id || 'knowledge-graph',
+                channelName: result.usedChannel?.name || '知识图谱',
+                model: result.usedModel || requestOptions.model,
+                duration: 0,
+                success: true,
+                source: '知识图谱',
+                apiUsage: result.usage,
+                request: { messages: [{ role: 'user', content: '（知识图谱提取）' }], model: requestOptions.model }
+            })
+        } catch {}
         return result.response
     }
 

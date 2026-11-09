@@ -1,5 +1,9 @@
 import config from '../config/config.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
 import { parseUserMessage, segment } from '../src/utils/messageParser.js'
+
+/** 已拉过完整成员表的群（每进程每群一次） */
+const chatWarmedGroups = new Set()
 import { isDebugEnabled } from './Commands.js'
 import {
     recordSentMessage,
@@ -90,9 +94,15 @@ export class Chat extends plugin {
      * 统一消息处理入口
      */
     async handleMessage() {
+        // 忽略被屏蔽的 Bot（避免同群双 Bot 重复回复）
+        if (isIgnoredBot(this.e)) return false
         const e = this.e
 
         if (isSelfMessage(e)) return false
+
+        // 忽略名单（例如在群里刷屏的游戏机器人），避免每条播报都触发一次 LLM
+        const ignoreUsers = config.get('trigger.ignoreUsers') || []
+        if (ignoreUsers.map(String).includes(String(e.user_id))) return false
         if (isMessageProcessed(e)) return false
 
         const approvalInput = toolApprovalService.resolveApproval(e.msg || '', {
@@ -110,7 +120,9 @@ export class Chat extends plugin {
         if (e.isGroup && e.message_id && !isQQBotInstance(e)) {
             try {
                 cacheGroupMessage(e)
-            } catch {}
+            } catch (err) {
+                logger.debug('[Chat] 缓存群消息失败:', err.message)
+            }
         }
 
         // 检查监听器是否启用
@@ -537,7 +549,9 @@ export class Chat extends plugin {
                 msg: e.msg,
                 raw_message: e.raw_message
             })
-        } catch {}
+        } catch (err) {
+            logger.debug('[Chat] 收集群消息失败:', err.message)
+        }
     }
 
     /**
@@ -571,7 +585,13 @@ export class Chat extends plugin {
         })
 
         const rawTextContent = parsedMessage.content?.find(c => c.type === 'text')?.text?.trim()
-        const textContent = msgForChat?.trim() || rawTextContent
+        let textContent = msgForChat?.trim() || rawTextContent
+        // 触发词取的是 e.msg，会丢掉 @ 提及；把解析出的提及信息补回去，否则 AI 看不到被 @ 的人
+        if (textContent && rawTextContent) {
+            const atTags = rawTextContent.match(/\[提及用户[^\]]*\]/g) || []
+            const missing = atTags.filter(t => !textContent.includes(t))
+            if (missing.length > 0) textContent = `${textContent} ${missing.join(' ')}`.trim()
+        }
 
         if (!textContent && (!parsedMessage.content || parsedMessage.content.length === 0)) {
             return false
@@ -588,7 +608,9 @@ export class Chat extends plugin {
                     source: e.adapter || 'unknown'
                 })
             }
-        } catch {}
+        } catch (err) {
+            logger.debug('[Chat] 缓存消息统计失败:', err.message)
+        }
 
         // 设置工具上下文
         setToolContext({ event: e, bot: e.bot || globalThis.Bot })
@@ -648,6 +670,7 @@ export class Chat extends plugin {
 
             // 处理回复
             if (result.response && result.response.length > 0) {
+                await this.warmMemberMap()
                 const replyContent = this.formatReply(result.response)
                 if (replyContent) {
                     const replyTextContent = result.response
@@ -675,6 +698,18 @@ export class Chat extends plugin {
 
                     let handled = false
 
+                    // 回复里要 @ 人时先确保群成员表可用，否则 @名字 无法转成真实 at
+                    if (replyTextContent && String(replyTextContent).includes('@') && e.isGroup) {
+                        try {
+                            const existing = this.memberMapOf()
+                            if (!(existing instanceof Map) || existing.size === 0) {
+                                await e.group?.getMemberMap?.()
+                            }
+                        } catch (err) {
+                            logger.debug('[Chat] 预热成员表失败:', err.message)
+                        }
+                    }
+
                     // 检测数学公式并渲染
                     if (mathRenderEnabled && replyTextContent) {
                         const mathDetection = renderService.detectMathFormulas(replyTextContent)
@@ -687,7 +722,9 @@ export class Chat extends plugin {
                                 const replyResult = await this.reply(segment.image(imageBuffer), quoteReply)
                                 this.handleAutoRecall(replyResult, false)
                                 handled = true
-                            } catch {}
+                            } catch (err) {
+                                logger.debug('[Chat] 长文本转图失败:', err.message)
+                            }
                         }
                     }
 
@@ -702,15 +739,44 @@ export class Chat extends plugin {
                         // 单条可直发的文本长度上限：超过即进入语义分段/折叠流程
                         const DIRECT_SEND_LIMIT = 140
                         const useSegmentedOutput = sentenceOutputCfg.enabled && sentenceOutputCfg.chatEnabled !== false
+
+                        // 拟人逐行发送：按换行拆成多条消息，顺带把 @名字/@QQ 转成真实 at
+                        // 默认开启：逐行拆成多条发送（面板保存配置时可能把自定义键丢掉，所以用「不等于 false」判断）
+                        if (!toolWrapperNoise && sentenceOutputCfg.lineSplit !== false) {
+                            const lines = replyTextContent.split(/\n+/).map(t => t.trim()).filter(Boolean)
+                            // 单轮最多 8 条、单条 ≤500 字；超出的合到最后一条，超长行交给折叠逻辑
+                            const maxSegments = Math.max(1, Math.min(12, Number(sentenceOutputCfg.maxSegments) || 8))
+                            const MAX_SEGMENT_CHARS = 500
+                            if (lines.length > 1 && lines.every(l => l.length <= MAX_SEGMENT_CHARS)) {
+                                if (lines.length > maxSegments) {
+                                    const tail = lines.slice(maxSegments - 1).join(' ').slice(0, MAX_SEGMENT_CHARS)
+                                    lines.splice(maxSegments - 1, lines.length, tail)
+                                }
+                                for (let i = 0; i < lines.length; i++) {
+                                    const parts = this.processAtMentions(lines[i])
+                                    const payload = parts.length > 1 ? parts : lines[i]
+                                    const replyResult = await this.reply(payload, quoteReply && i === 0)
+                                    if (i === 0) this.handleAutoRecall(replyResult, false)
+                                    if (i < lines.length - 1) {
+                                        const minD = Number(sentenceOutputCfg.minDelay) || 260
+                                        const maxD = Math.max(minD + 100, Number(sentenceOutputCfg.maxDelay) || 900)
+                                        const delay = minD + Math.floor(Math.random() * (maxD - minD))
+                                        await new Promise(r => setTimeout(r, delay))
+                                    }
+                                }
+                                handled = true
+                            }
+                        }
                         // 超长折叠阈值：超过则将整段回复折叠为合并转发/图片卡片
                         const foldLimit = Math.max(longTextCfg.threshold || 500, 500)
                         // 短回复临界值：可逐句发送的最大长度
                         const shortLimit = Math.max(DIRECT_SEND_LIMIT, foldLimit)
 
                         // 优先走统一分段发送（启用按句输出时对所有文本生效，否则仅长文本前置）
-                        if (!toolWrapperNoise && (useSegmentedOutput || replyTextContent.length > DIRECT_SEND_LIMIT)) {
+                        if (!handled && !toolWrapperNoise && (useSegmentedOutput || replyTextContent.length > DIRECT_SEND_LIMIT)) {
                             const sent = await sendSegmentedMessage(this, replyTextContent, {
                                 quote: quoteReply,
+                                decorate: text => this.processAtMentions(text),
                                 shortLimit,
                                 foldLimit,
                                 foldHandler: async fullText => {
@@ -790,7 +856,9 @@ export class Chat extends plugin {
                                 await new Promise(r => setTimeout(r, Math.random() * 1000 + 300))
                                 await this.reply(emojiMsg)
                             }
-                        } catch {}
+                        } catch (err) {
+                            logger.debug('[Chat] 发送表情包失败:', err.message)
+                        }
                     }
                 }
             }
@@ -891,65 +959,73 @@ export class Chat extends plugin {
      */
     processAtMentions(text) {
         const e = this.e
-        if (!e?.isGroup || !e?.group_id) {
-            // 非群聊环境，直接返回原文本
-            return [text]
+        if (!e?.isGroup || !e?.group_id) return [text]
+
+        // 全角 ＠ 先归一化，模型偶尔会输出中文输入法下的全角符号
+        let str = String(text).replace(/＠/g, '@')
+
+        // 收集群成员：群名片/昵称 -> QQ
+        const memberMap = this.memberMapOf()
+        const byName = new Map()
+        if (memberMap instanceof Map) {
+            for (const [uid, member] of memberMap) {
+                const id = Number(member?.user_id || uid)
+                if (!Number.isFinite(id)) continue
+                for (const raw of [member?.card, member?.nickname, member?.nick]) {
+                    const name = String(raw || '').trim()
+                    if (name && !byName.has(name)) byName.set(name, id)
+                }
+            }
         }
 
-        // 匹配 @数字 或 @名字 的模式（非真实at段）
-        // 格式: @123456789 或 @昵称
-        const atPattern = /@(\d{5,12}|[^\s@]{1,20})(?=\s|$|[，。！？,.!?])/g
+        // 用占位符标记要换成 at 的位置，最后再统一拆段
+        const MARK = '\u0001'
+        const END = '\u0002'
 
+        // @QQ号
+        str = str.replace(/@用户[（(]?(\d{5,12})[)）]?/g, (m, qq) => MARK + qq + END)
+        str = str.replace(/@(\d{5,12})/g, (m, qq) => MARK + qq + END)
+
+        // @群名片/昵称（长名字优先，避免「小明」把「小明同学」切坏）
+        if (byName.size > 0) {
+            const names = [...byName.keys()].filter(n => n.length >= 2).sort((a, b) => b.length - a.length)
+            for (const name of names) {
+                const token = '@' + name
+                if (!str.includes(token)) continue
+                str = str.split(token).join(MARK + byName.get(name) + END)
+            }
+        }
+
+        // 模糊一轮：模型写的名字和群名片不完全一致时再兜一次
+        if (byName.size > 0) {
+            const names = [...byName.keys()].filter(n => n.length >= 2).sort((a, b) => b.length - a.length)
+            str = str.replace(/@([^\s@，。！？,.!?~]{1,20})/g, (raw, word) => {
+                if (raw.includes(MARK)) return raw
+                const w = String(word || '').trim()
+                if (w.length < 2) return raw
+                const hit = names.find(n => n === w || n.startsWith(w) || w.startsWith(n)) ||
+                    names.find(n => n.includes(w) || w.includes(n))
+                return hit ? MARK + byName.get(hit) + END : raw
+            })
+        }
+
+        // 拆回消息段
         const parts = []
-        let lastIndex = 0
-        let match
-
-        while ((match = atPattern.exec(text)) !== null) {
-            const fullMatch = match[0]
-            const target = match[1]
-            const matchStart = match.index
-
-            // 添加匹配前的文本
-            if (matchStart > lastIndex) {
-                parts.push(text.slice(lastIndex, matchStart))
-            }
-
-            // 判断是数字还是名字
-            const isNumeric = /^\d+$/.test(target)
-            let atSegment = null
-
-            if (isNumeric) {
-                // 数字：直接作为QQ号尝试at
-                const userId = parseInt(target)
-                // 尝试验证用户是否在群内
-                const memberInGroup = this.findMemberInGroup(userId)
-                if (memberInGroup) {
-                    atSegment = segment.at(userId)
-                }
-            } else {
-                // 名字：尝试在群内查找
-                const foundMember = this.findMemberByName(target)
-                if (foundMember) {
-                    atSegment = segment.at(foundMember.user_id || foundMember.uid)
-                }
-            }
-
-            if (atSegment) {
-                parts.push(atSegment)
-            } else {
-                // 找不到用户，保留原文本
-                parts.push(fullMatch)
-            }
-
-            lastIndex = matchStart + fullMatch.length
+        const re = new RegExp(MARK + '(\\d+)' + END, 'g')
+        let last = 0
+        let m
+        while ((m = re.exec(str)) !== null) {
+            if (m.index > last) parts.push(str.slice(last, m.index))
+            parts.push(segment.at(Number(m[1])))
+            last = m.index + m[0].length
         }
+        if (last < str.length) parts.push(str.slice(last))
 
-        // 添加剩余文本
-        if (lastIndex < text.length) {
-            parts.push(text.slice(lastIndex))
-        }
-
-        return parts.length > 0 ? parts : [text]
+        const cleaned = parts.filter(p => typeof p !== 'string' || p.trim())
+        const ats = cleaned.filter(p => p && p.type === 'at').map(p => p.qq)
+        if (ats.length > 0) logger.mark(`[Chat] @转换成功: ${ats.join(',')} | 原文: ${String(text).slice(0, 80)}`)
+        else if (String(text).includes('@')) logger.mark(`[Chat] @未转换: ${String(text).slice(0, 80)}`)
+        return cleaned.length > 0 ? cleaned : [text]
     }
 
     /**
@@ -957,82 +1033,67 @@ export class Chat extends plugin {
      * @param {number} userId - 用户QQ号
      * @returns {Object|null} 成员信息
      */
-    findMemberInGroup(userId) {
+    /** 成员缓存：适配器放在 bot.gml（Map<群号, Map<QQ, 成员>>），群对象本身没有 gml */
+    memberMapOf() {
         const e = this.e
-        if (!e?.group?.getMemberMap) {
-            // 尝试通过bot获取
-            const bot = e?.bot || globalThis.Bot
-            const group = bot?.pickGroup?.(e.group_id)
-            if (group?.getMemberMap) {
-                try {
-                    // 同步方式获取（如果有缓存）
-                    const memberMap = group.gml || group._memberMap
-                    if (memberMap instanceof Map) {
-                        return memberMap.get(userId) || null
-                    }
-                } catch {}
-            }
-            return null
-        }
+        if (!e) return null
+        const gid = String(e.group_id)
+        const bot = e.bot || globalThis.Bot
+        let map = null
         try {
-            const memberMap = e.group.gml || e.group._memberMap
-            if (memberMap instanceof Map) {
-                return memberMap.get(userId) || null
-            }
-        } catch {}
+            map = bot?.gml?.get?.(gid) ?? bot?.gml?.get?.(Number(gid)) ?? null
+        } catch (err) {
+            logger.debug('[Chat] 读取群成员缓存失败:', err.message)
+        }
+        if (map instanceof Map) return map
+        const g = e.group || bot?.pickGroup?.(gid)
+        if (g?.gml instanceof Map) return g.gml
+        if (g?._memberMap instanceof Map) return g._memberMap
         return null
     }
 
-    /**
-     * 通过名字在群内查找成员
-     * @param {string} name - 昵称或群名片
-     * @returns {Object|null} 成员信息
-     */
-    findMemberByName(name) {
+    /** 拉一次完整群成员列表填进缓存，@名字 才能转成真实 at */
+    async warmMemberMap() {
         const e = this.e
+        if (!e?.isGroup || !e?.group_id) return
+        const gid = String(e.group_id)
+        // gml 里可能只有最近说过话的人，不能因为 size>0 就跳过
+        if (chatWarmedGroups.has(gid)) return
+        try {
+            const bot = e.bot || globalThis.Bot
+            const g = e.group?.getMemberMap ? e.group : bot?.pickGroup?.(gid)
+            if (typeof g?.getMemberMap !== 'function') return
+            await g.getMemberMap()
+            chatWarmedGroups.add(gid)
+            logger.mark(`[Chat] 已加载群成员表 ${gid}（${bot?.gml?.get?.(gid)?.size ?? bot?.gml?.get?.(Number(gid))?.size ?? '?'} 人）`)
+        } catch (err) {
+            logger.debug('[Chat] 拉取群成员失败:', err.message)
+        }
+    }
+
+    findMemberInGroup(userId) {
+        const memberMap = this.memberMapOf()
+        if (!(memberMap instanceof Map)) return null
+        return memberMap.get(Number(userId)) || memberMap.get(String(userId)) || null
+    }
+
+    findMemberByName(name) {
         if (!name) return null
-
+        const memberMap = this.memberMapOf()
+        if (!(memberMap instanceof Map)) return null
         const searchName = name.toLowerCase().trim()
-        let memberMap = null
-
-        // 获取成员Map
-        if (e?.group?.gml instanceof Map) {
-            memberMap = e.group.gml
-        } else if (e?.group?._memberMap instanceof Map) {
-            memberMap = e.group._memberMap
-        } else {
-            const bot = e?.bot || globalThis.Bot
-            const group = bot?.pickGroup?.(e.group_id)
-            if (group?.gml instanceof Map) {
-                memberMap = group.gml
-            } else if (group?._memberMap instanceof Map) {
-                memberMap = group._memberMap
-            }
-        }
-
-        if (!memberMap) return null
-
-        // 遍历查找
         for (const [uid, member] of memberMap) {
-            const card = (member.card || '').toLowerCase()
-            const nickname = (member.nickname || member.nick || '').toLowerCase()
-
-            // 精确匹配
-            if (card === searchName || nickname === searchName) {
-                return { ...member, user_id: uid }
-            }
+            const card = String(member?.card || '').toLowerCase()
+            const nickname = String(member?.nickname || member?.nick || '').toLowerCase()
+            if (card === searchName || nickname === searchName) return { ...member, user_id: member.user_id || uid }
         }
-
-        // 模糊匹配
         for (const [uid, member] of memberMap) {
-            const card = (member.card || '').toLowerCase()
-            const nickname = (member.nickname || member.nick || '').toLowerCase()
-
-            if (card.includes(searchName) || nickname.includes(searchName)) {
-                return { ...member, user_id: uid }
+            const card = String(member?.card || '').toLowerCase()
+            const nickname = String(member?.nickname || member?.nick || '').toLowerCase()
+            if ((card && card.includes(searchName)) || (nickname && nickname.includes(searchName))) {
+                return { ...member, user_id: member.user_id || uid }
             }
         }
-
         return null
     }
 
@@ -1126,7 +1187,9 @@ export class Chat extends plugin {
                     userId: this.e.group_id ? null : this.e.user_id,
                     nodes: outerNodes
                 })
-            } catch {}
+            } catch (err) {
+                logger.debug('[Chat] 发送合并转发失败:', err.message)
+            }
         }
     }
 
@@ -1153,7 +1216,9 @@ export class Chat extends plugin {
                 } else if (typeof bot?.recallMsg === 'function') {
                     await bot.recallMsg(messageId)
                 }
-            } catch {}
+            } catch (err) {
+                logger.debug('[Chat] 撤回消息失败:', err.message)
+            }
         }, delay)
     }
 

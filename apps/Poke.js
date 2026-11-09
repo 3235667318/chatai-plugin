@@ -3,9 +3,15 @@
  * 使用AI人设响应戳一戳
  */
 import config from '../config/config.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
 import { getBotIds } from '../src/utils/messageDedup.js'
 import { parsePokeEvent, sendPoke, getUserNickname, checkEventProbability } from '../src/utils/eventAdapter.js'
 import { getAIResponse } from '../src/utils/common.js'
+import { segment } from '../src/utils/messageParser.js'
+import { convertAtMentions } from '../src/utils/mentionAt.js'
+
+/** 已拉过完整成员表的群 */
+const pokeWarmedGroups = new Set()
 
 export class AI_Poke extends plugin {
     constructor() {
@@ -19,7 +25,11 @@ export class AI_Poke extends plugin {
     }
 
     async handlePoke() {
+        if (isIgnoredBot(this.e)) return false
         const e = this.e
+        const pokeT0 = Date.now()
+        const eventDelay = e?.time ? Date.now() - e.time * 1000 : null
+        globalThis.logger?.mark?.(`[PokeTiming] 事件开始（事件→处理 ${eventDelay === null ? 'n/a' : eventDelay + 'ms'}）`)
 
         // 功能开关
         if (!config.get('features.poke.enabled')) {
@@ -49,6 +59,7 @@ export class AI_Poke extends plugin {
         }
 
         const nickname = await getUserNickname(e, operatorId)
+        globalThis.logger?.mark?.(`[PokeTiming] 昵称耗时 ${Date.now() - pokeT0}ms`)
 
         logger.info(`[AI-Poke] ${nickname}(${operatorId}) ${isGroup ? '群聊' : '私聊'}戳了机器人`)
 
@@ -60,15 +71,42 @@ export class AI_Poke extends plugin {
             .replace(/\{user_id\}/g, String(operatorId))
             .replace(/\{group_id\}/g, String(groupId || ''))
 
+        const aiStartedAt = Date.now()
         const aiReply = await getAIResponse(eventDesc, {
+            // 事件回复由 handler 自己发；开着工具模型会额外调 reply_current_message，一次戳一戳变成好几条消息
+            disableTools: true,
+            event: e,
+            senderName: typeof nickname !== 'undefined' ? nickname : '',
             userId: operatorId,
             groupId: groupId,
             maxLength: 100,
             logTag: 'AI-Poke'
         })
 
+        globalThis.logger?.mark?.(`[PokeTiming] AI耗时 ${Date.now() - aiStartedAt}ms`)
         if (aiReply) {
-            await this.reply(aiReply)
+            // 合成事件回复也要把 @名字 转成真实 at（这条路径不走 apps/chat.js）
+            // 成员表没加载过就先拉一次，否则 @名字 找不到人
+            const warmPokeMembers = async () => {
+                try {
+                    const gid = String(groupId || '')
+                    if (pokeWarmedGroups.has(gid)) return
+                    const g = e?.group?.getMemberMap ? e.group : e?.bot?.pickGroup?.(gid)
+                    if (typeof g?.getMemberMap !== 'function') return
+                    await g.getMemberMap()
+                    pokeWarmedGroups.add(gid)
+                    logger.mark(`[AI-Poke] 已加载成员表 ${gid}（${e?.bot?.gml?.get?.(gid)?.size ?? e?.bot?.gml?.get?.(Number(gid))?.size ?? '?'} 人）`)
+                } catch (err) {
+                    logger.debug('[AI-Poke] 拉取成员失败:', err.message)
+                }
+            }
+            await warmPokeMembers()
+            const pokePayload = convertAtMentions(aiReply, { e, segment })
+            const gmlSize = e?.bot?.gml?.get?.(String(groupId))?.size ?? e?.bot?.gml?.get?.(Number(groupId))?.size ?? 'null'
+            logger.mark(`[AI-Poke] gml=${gmlSize} 回复片段: ${JSON.stringify(pokePayload).slice(0, 300)}`)
+            const sendStartedAt = Date.now()
+            await this.reply(pokePayload)
+            globalThis.logger?.mark?.(`[PokeTiming] 发送耗时 ${Date.now() - sendStartedAt}ms｜总耗时 ${Date.now() - pokeT0}ms`)
             // 回戳
             if (config.get('features.poke.pokeBack') && isGroup) {
                 await this.pokeBack(e, operatorId)
