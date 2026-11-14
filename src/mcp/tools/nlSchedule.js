@@ -37,13 +37,17 @@ export const nlScheduleTools = [
                 target_name: {
                     type: 'string',
                     description: '可选，目标用户昵称'
+                },
+                target_group: {
+                    type: 'string',
+                    description: '可选，目标群号（需要发到别的群时填写，默认当前群）'
                 }
             },
             required: ['time', 'task']
         },
         handler: async (args, ctx) => {
             const e = ctx?.getEvent?.()
-            const { time, task, target_qq, target_name } = args
+            const { time, task, target_qq, target_name, target_group } = args
 
             const groupId = e?.group_id ? String(e.group_id) : null
             const creatorId = String(e?.user_id || e?.sender?.user_id || '')
@@ -64,7 +68,8 @@ export const nlScheduleTools = [
                 creatorId,
                 creatorName,
                 targetId: target_qq,
-                targetName: target_name
+                targetName: target_name,
+                targetGroupId: target_group
             })
 
             if (!result.success) {

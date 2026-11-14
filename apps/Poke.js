@@ -25,6 +25,12 @@ export class AI_Poke extends plugin {
     }
 
     async handlePoke() {
+        try {
+            const e0 = this.e
+            logger.mark(
+                `[PokeEvent] group=${e0?.group_id} user=${e0?.user_id} target=${e0?.target_id} sub=${e0?.sub_type || ''} notice=${e0?.notice_type || ''}`
+            )
+        } catch {}
         if (isIgnoredBot(this.e)) return false
         const e = this.e
         const pokeT0 = Date.now()

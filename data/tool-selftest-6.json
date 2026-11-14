@@ -1,0 +1,62 @@
+[
+  {
+    "name": "send_group_message",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyv5\", \"group_id\": 1002731262 }"
+  },
+  {
+    "name": "reply_current_message",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyv9\", \"is_group\": true }"
+  },
+  {
+    "name": "send_face",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyvd\", \"face_id\": 1 }"
+  },
+  {
+    "name": "send_long_msg",
+    "status": "OK",
+    "ms": 6,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyvh\", \"message_count\": 2 }"
+  },
+  {
+    "name": "send_long_message",
+    "status": "OK",
+    "ms": 6,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyvn\", \"method\": \"target.sendForwardMsg\", \"result\": { \"message_id\": \"sandbox-mwkndyvn\", \"time\": 1794917251 }, \"mode\": \"forward\", \"chunk_count\": 1, \"total_length\": 11 }"
+  },
+  {
+    "name": "send_markdown",
+    "status": "OK",
+    "ms": 7,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwkndyvs\" }"
+  },
+  {
+    "name": "send_card",
+    "status": "FAIL",
+    "ms": 6,
+    "text": "{ \"success\": false, \"error\": \"不支持的模板类型\" }"
+  },
+  {
+    "name": "poke_user",
+    "status": "OK",
+    "ms": 8,
+    "text": "{ \"success\": true, \"user_id\": 3235667318, \"group_id\": \"1002731262\", \"type\": \"group\" }"
+  },
+  {
+    "name": "group_poke",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"message\": \"群内戳一戳成功\", \"group_id\": 1002731262, \"user_id\": 3235667318 }"
+  },
+  {
+    "name": "mark_msg_as_read",
+    "status": "FAIL",
+    "ms": 8,
+    "text": "{ \"success\": false, \"error\": \"标记已读失败: mark_msg_as_read 调用失败 (sendApi): 缺少参数 group_id 或 user_id\" }"
+  }
+]

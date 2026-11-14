@@ -1,0 +1,110 @@
+[
+  {
+    "name": "get_bot_info",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"user_id\": 2917988201, \"nickname\": \"七七\", \"sex\": \"unknown\", \"friend_count\": 134, \"group_count\": 36, \"avatar_url\": \"https://q.qlogo.cn/g?b=qq&s=0&nk=2917988201\", \"status\": \"online\", \"adapter\": \"onebot\", \"adapter_id\": \"锅巴沙盒\", \"version\": { \"app_name\": \"NapCat"
+  },
+  {
+    "name": "get_login_info",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"user_id\": 2917988201, \"nickname\": \"七七\", \"sex\": \"unknown\", \"friend_count\": 134, \"group_count\": 36, \"avatar_url\": \"https://q.qlogo.cn/g?b=qq&s=0&nk=2917988201\", \"status\": \"online\", \"adapter\": \"onebot\", \"adapter_id\": \"锅巴沙盒\", \"version\": { \"app_name\": \"NapCat"
+  },
+  {
+    "name": "get_bot_status",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"user_id\": 2917988201, \"nickname\": \"七七\", \"sex\": \"unknown\", \"friend_count\": 134, \"group_count\": 36, \"avatar_url\": \"https://q.qlogo.cn/g?b=qq&s=0&nk=2917988201\", \"status\": \"online\", \"adapter\": \"onebot\", \"adapter_id\": \"锅巴沙盒\", \"version\": { \"app_name\": \"NapCat"
+  },
+  {
+    "name": "get_self_info",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"user_id\": 2917988201, \"nickname\": \"七七\", \"sex\": \"unknown\", \"friend_count\": 134, \"group_count\": 36, \"avatar_url\": \"https://q.qlogo.cn/g?b=qq&s=0&nk=2917988201\", \"status\": \"online\", \"adapter\": \"onebot\", \"adapter_id\": \"锅巴沙盒\", \"version\": { \"app_name\": \"NapCat"
+  },
+  {
+    "name": "get_version_info",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"app_name\": \"NapCat.Onebot\", \"app_version\": \"4.18.42\", \"protocol_version\": \"v11\", \"protocol_name\": \"unknown\" }"
+  },
+  {
+    "name": "get_online_clients",
+    "status": "OK",
+    "ms": 505,
+    "text": "{ \"success\": true, \"clients\": [] }"
+  },
+  {
+    "name": "get_current_group",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"member_count\": 78, \"max_member_count\": 500, \"avatar_url\": \"https://p.qlogo.cn/gh/1074031485/1074031485/640\" }"
+  },
+  {
+    "name": "get_group_info",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"group_name\": \"群1074031485\", \"member_count\": null, \"avatar_url\": \"\", \"bot_in_group\": true }"
+  },
+  {
+    "name": "get_group_list",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"total\": 36, \"returned\": 36, \"groups\": [ { \"group_id\": 1131305166, \"group_name\": \"你好、蓝色肥肥、 、大肥鱼呀、见夕、七七\", \"member_count\": 6 }, { \"group_id\": 1078475858, \"group_name\": \"59907狂潮\", \"member_count\": 5 }, { \"group_id\":"
+  },
+  {
+    "name": "get_group_member_list",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_name\": \"群1074031485\", \"total\": 1, \"returned\": 1, \"members\": [ { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"title\": \"\" } ] }"
+  },
+  {
+    "name": "get_group_member_info",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"title\": \"\", \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "get_group_admins",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"owner\": null, \"admin_count\": 0, \"admins\": [] }"
+  },
+  {
+    "name": "search_group_member",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"keyword\": \"宝\", \"count\": 1, \"members\": [ { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"match_type\": \"card\", \"avatar_url\": \"\" } ] }"
+  },
+  {
+    "name": "get_group_notice",
+    "status": "OK",
+    "ms": 286,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"count\": 1, \"notices\": [ { \"index\": 1, \"id\": \"7d6b044000000000e7d22f6a3b340900\", \"content\": \"群主和管理员（人，核桃（不是真核桃的意思））是同一个人&nbsp;&#10;别骂人和讲黄（不想群被封）&#10;管理别随便艾特全体（提前说一下）\", \"sender_id\": 2769099155, \"time\": 1781519079, "
+  },
+  {
+    "name": "check_in_group",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"is_in_group\": false, \"member_info\": null, \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "search_group",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"keyword\": \"核桃\", \"count\": 1, \"groups\": [ { \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"member_count\": 78, \"match_type\": \"group_name\", \"avatar_url\": \"https://p.qlogo.cn/gh/1074031485/1074031485/100\" } ] }"
+  },
+  {
+    "name": "get_group_at_all_remain",
+    "status": "OK",
+    "ms": 131,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"can_at_all\": true, \"remain_at_all_count_for_group\": 20, \"remain_at_all_count_for_uin\": 10 }"
+  },
+  {
+    "name": "get_group_system_msg",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"invited_requests\": [], \"join_requests\": [] }"
+  }
+]

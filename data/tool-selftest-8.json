@@ -1,0 +1,44 @@
+[
+  {
+    "name": "write_file",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "工具 \"write_file\" 被标记为危险工具，已被拦截。如需使用，请在配置中启用 allowDangerous。"
+  },
+  {
+    "name": "read_file",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"读取文件失败: 禁止操作系统关键目录: data/selftest.txt\" }"
+  },
+  {
+    "name": "list_directory",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"列出目录失败: 禁止操作系统关键目录: data\" }"
+  },
+  {
+    "name": "get_system_info",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"platform\": \"linux\", \"arch\": \"x64\", \"hostname\": \"TRSS-AllBot\", \"release\": \"6.8.0-134-generic\", \"uptime\": \"54天7小时49分钟30秒\", \"memory\": { \"total\": \"7.51 GB\", \"free\": \"3.81 GB\", \"used\": \"3.7 GB\", \"usagePercent\": \"49.2%\" }, \"cpu\": { \"model\": \"Intel(R) Xeon(R) Platinum"
+  },
+  {
+    "name": "execute_command",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "工具 \"execute_command\" 仅允许主人调用"
+  },
+  {
+    "name": "download_to_file",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "{ \"success\": false, \"error\": \"缺少必需参数: save_path (保存路径)\", \"missing_params\": [ \"save_path (保存路径)\" ] }"
+  },
+  {
+    "name": "get_file_info",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"获取文件信息失败: 禁止操作系统关键目录: data/selftest.txt\" }"
+  }
+]

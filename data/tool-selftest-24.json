@@ -1,0 +1,32 @@
+[
+  {
+    "name": "generate_image",
+    "status": "FAIL",
+    "ms": 20000,
+    "text": "超时20s"
+  },
+  {
+    "name": "ai_image_edit",
+    "status": "FAIL",
+    "ms": 3,
+    "text": "{ \"error\": \"请提供 image_url，或先发送/引用一张图片\" }"
+  },
+  {
+    "name": "ai_mindmap",
+    "status": "OK",
+    "ms": 12986,
+    "text": "{ \"success\": true, \"message\": \"思维导图已生成并发送\" }"
+  },
+  {
+    "name": "generate_video",
+    "status": "FAIL",
+    "ms": 5263,
+    "text": "{ \"success\": false, \"error\": \"API 错误 404: {\\\"success\\\":false,\\\"status\\\":404,\\\"message\\\":\\\"404 Not found. Check the docs for available routes.\\\",\\\"cause\\\":\\\"POST https://api.commandcode.ai/v1/chat/completions is not a registered API route\\\",\\\"docs\\\":\\\"https://commandcode.ai/docs\\\"}\" }"
+  },
+  {
+    "name": "video_analysis",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"error\": \"未找到支持视频分析的渠道，请添加智谱AI渠道（免费智谱视频）\", \"hint\": \"在渠道管理中添加智谱AI渠道，或使用免费智谱视频预设\" }"
+  }
+]

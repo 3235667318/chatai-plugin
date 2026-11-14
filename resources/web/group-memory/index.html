@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>群记忆 · ChatAI</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; background: #f7f7f8; color: #1f2328; }
+  @media (prefers-color-scheme: dark) { body { background: #111214; color: #e6e6e6; } .card { background: #1a1c1f !important; border-color: #2a2d31 !important; } .item { border-color: #2a2d31 !important; } }
+  header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid rgba(127,127,127,.2); }
+  header h1 { font-size: 18px; margin: 0; }
+  header a { color: inherit; opacity: .7; text-decoration: none; font-size: 13px; }
+  main { max-width: 960px; margin: 0 auto; padding: 20px 24px 60px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  select, button { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(127,127,127,.35); background: transparent; color: inherit; }
+  button { cursor: pointer; }
+  button:hover { border-color: #6b7280; }
+  .card { background: #fff; border: 1px solid rgba(127,127,127,.2); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .item { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed rgba(127,127,127,.25); }
+  .item:last-child { border-bottom: none; }
+  .item .text { flex: 1; white-space: pre-wrap; word-break: break-word; }
+  .item .time { opacity: .5; font-size: 12px; white-space: nowrap; }
+  .empty { opacity: .6; padding: 8px 0; }
+  .err { color: #d33; }
+</style>
+</head>
+<body>
+<header>
+  <h1>群记忆</h1>
+  <a href="/chatai/memory/">← 返回用户记忆</a>
+</header>
+<main>
+  <div class="row">
+    <label for="group">选择群：</label>
+    <select id="group"><option value="">加载中…</option></select>
+    <button id="refresh">刷新</button>
+    <span id="status" class="empty"></span>
+  </div>
+  <div class="card">
+    <h2>手动新增</h2>
+    <div class="row">
+      <select id="newCategory">
+        <option value="topic">话题</option>
+        <option value="relation">关系</option>
+        <option value="summary">上下文总结</option>
+      </select>
+      <button id="addBtn">新增</button>
+      <span id="addStatus" class="empty"></span>
+    </div>
+    <textarea id="newContent" rows="3" placeholder="输入要添加的群记忆内容…"
+      style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;font:inherit;resize:vertical"></textarea>
+  </div>
+  <div class="card">
+    <h2>记忆总结</h2>
+    <div class="row">
+      <label>聊天记录数量</label>
+      <input id="sumCount" type="number" min="10" max="2000" value="300"
+        style="width:90px;padding:6px 8px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit" />
+      <label>起始日期</label>
+      <input id="sumStart" type="date"
+        style="padding:6px 8px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit" />
+      <label>结束日期</label>
+      <input id="sumEnd" type="date"
+        style="padding:6px 8px;border-radius:8px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit" />
+      <button id="sumBtn">开始总结</button>
+      <span id="sumStatus" class="empty"></span>
+    </div>
+    <div class="empty" style="font-size:12px">数量默认取最近 300 条；填了日期则只总结该日期范围内的记录。总结过程约 1–2 分钟。</div>
+  </div>
+  <div id="content"></div>
+</main>
+<script>
+const API = '/chatai/api/memory'
+const $ = id => document.getElementById(id)
+
+function authHeaders() {
+  let t = localStorage.getItem('chatai_token')
+  if (!t) {
+    const m = document.cookie.match(/(?:^|;\s*)auth_token=([^;]+)/)
+    if (m) t = decodeURIComponent(m[1])
+  }
+  return t ? { Authorization: 'Bearer ' + t } : {}
+}
+
+async function api(path, options) {
+  const opts = { credentials: 'same-origin', ...(options || {}) }
+  opts.headers = { ...(opts.headers || {}), ...authHeaders() }
+  const res = await fetch(API + path, opts)
+  if (res.status === 401) {
+    throw new Error('登录已过期，请回记忆管理页重新登录')
+  }
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok || json.ok === false) throw new Error(json.message || ('HTTP ' + res.status))
+  if (json.code !== undefined && json.code !== 0 && json.code !== 200) {
+    throw new Error(json.message || ('接口错误 code=' + json.code))
+  }
+  return json.data !== undefined ? json.data : (json.result !== undefined ? json.result : json)
+}
+
+async function loadGroups() {
+  const groups = await api('/groups')
+  const list = (Array.isArray(groups) ? groups : []).map(g => {
+    const gid = String(g.groupId ?? '')
+    let name
+    if (!gid) name = '未知群'
+    else if (gid.includes(':')) name = 'QQBot群 ' + gid.split(':')[1].slice(0, 8) + '…'
+    else name = '群' + gid
+    return { id: gid, name }
+  }).filter(g => g.id)
+  const sel = $('group')
+  sel.innerHTML = ''
+  if (!list.length) {
+    sel.innerHTML = '<option value="">暂无群记忆</option>'
+    return
+  }
+  for (const g of list) {
+    const opt = document.createElement('option')
+    opt.value = g.id
+    opt.textContent = g.name
+    sel.appendChild(opt)
+  }
+  await loadMemories(sel.value)
+}
+
+async function loadMemories(groupId) {
+  const content = $('content')
+  content.innerHTML = ''
+  $('status').textContent = ''
+  if (!groupId) { content.innerHTML = '<div class="empty">这个群还没有记忆</div>'; return }
+  try {
+    const raw = await api('/group/' + encodeURIComponent(groupId))
+    // 只要群层面的记忆，不要混入这个群里的个人记忆
+    const list = (Array.isArray(raw) ? raw : []).filter(
+      m => String(m.userId || '').startsWith('群') || m.source === 'group_context'
+    )
+    const groups = { topic: [], relation: [], summary: [], other: [] }
+    for (const m of list) {
+      const k = ['topic', 'relation', 'summary'].includes(m.category) ? m.category : 'other'
+      groups[k].push(m)
+    }
+    const titles = { topic: '话题', relation: '关系', summary: '上下文总结', other: '其他' }
+    for (const key of ['topic', 'relation', 'summary', 'other']) {
+      const arr = groups[key]
+      if (!arr.length) continue
+      const card = document.createElement('div')
+      card.className = 'card'
+      card.innerHTML = '<h2>' + titles[key] + '（' + arr.length + '）</h2>'
+      for (const m of arr) {
+        const item = document.createElement('div')
+        item.className = 'item'
+        const text = document.createElement('div')
+        text.className = 'text'
+        text.textContent = m.content
+        const time = document.createElement('div')
+        time.className = 'time'
+        time.textContent = m.updatedAt ? new Date(m.updatedAt).toLocaleString('zh-CN') : ''
+        const actions = document.createElement('div')
+        const edit = document.createElement('button')
+        edit.textContent = '编辑'
+        edit.onclick = async () => {
+          const val = prompt('修改记忆内容', m.content)
+          if (val == null || !val.trim()) return
+          try {
+            await api('/' + m.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: val.trim() }) })
+            await loadMemories(groupId)
+          } catch (e) { alert('保存失败：' + e.message) }
+        }
+        const del = document.createElement('button')
+        del.textContent = '删除'
+        del.style.marginLeft = '6px'
+        del.onclick = async () => {
+          if (!confirm('删除这条群记忆？')) return
+          try {
+            await api('/' + m.id, { method: 'DELETE' })
+            await loadMemories(groupId)
+          } catch (e) { alert('删除失败：' + e.message) }
+        }
+        actions.appendChild(edit)
+        actions.appendChild(del)
+        item.appendChild(text)
+        item.appendChild(time)
+        item.appendChild(actions)
+        card.appendChild(item)
+      }
+      content.appendChild(card)
+    }
+    if (!list.length) content.innerHTML = '<div class="empty">这个群还没有记忆</div>'
+    $('status').textContent = '共 ' + list.length + ' 条'
+  } catch (e) {
+    content.innerHTML = '<div class="empty err">加载失败：' + e.message + '</div>'
+  }
+}
+
+async function addMemory() {
+  const groupId = $('group').value
+  const content = $('newContent').value.trim()
+  const category = $('newCategory').value
+  if (!groupId) { $('addStatus').textContent = '请先选择群'; return }
+  if (!content) { $('addStatus').textContent = '内容不能为空'; return }
+  $('addStatus').textContent = '添加中…'
+  try {
+    await api('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: '群' + groupId, groupId, category, content, source: 'manual' })
+    })
+    $('newContent').value = ''
+    $('addStatus').textContent = '已添加'
+    await loadMemories(groupId)
+  } catch (e) {
+    $('addStatus').textContent = '添加失败：' + e.message
+  }
+}
+
+async function summarizeGroup() {
+  const groupId = $('group').value
+  if (!groupId) { $('sumStatus').textContent = '请先选择群'; return }
+  const count = parseInt($('sumCount').value) || 300
+  const start = $('sumStart').value || undefined
+  const end = $('sumEnd').value || undefined
+  $('sumBtn').disabled = true
+  $('sumStatus').textContent = '总结中，请稍候…'
+  try {
+    const r = await api('/group/' + encodeURIComponent(groupId) + '/summarize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count, start, end })
+    })
+    $('sumStatus').textContent =
+      '完成：' + r.messageCount + ' 条记录，话题 ' + r.topics.length + ' 条，关系 ' + r.relations.length + ' 条'
+    await loadMemories(groupId)
+  } catch (e) {
+    $('sumStatus').textContent = '总结失败：' + e.message
+  } finally {
+    $('sumBtn').disabled = false
+  }
+}
+
+$('sumBtn').addEventListener('click', summarizeGroup)
+$('addBtn').addEventListener('click', addMemory)
+$('group').addEventListener('change', () => loadMemories($('group').value))
+$('refresh').addEventListener('click', () => loadGroups().catch(e => { $('status').textContent = e.message }))
+loadGroups().catch(e => { $('content').innerHTML = '<div class="empty err">' + e.message + '</div>' })
+</script>
+</body>
+</html>

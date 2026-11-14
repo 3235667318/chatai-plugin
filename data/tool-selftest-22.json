@@ -1,0 +1,20 @@
+[
+  {
+    "name": "publish_qzone_mood",
+    "status": "OK",
+    "ms": 291,
+    "text": "{ \"success\": true, \"message\": \"说说发布成功\", \"tid\": \"69f7ecadec46fc6af8630a00\", \"content\": \"【工具自检】动态测试\", \"image_count\": 0, \"image_requested\": 0 }"
+  },
+  {
+    "name": "like_qzone_post",
+    "status": "OK",
+    "ms": 149,
+    "text": "{ \"success\": true, \"message\": \"点赞成功\", \"target_uin\": \"2917988201\", \"tid\": \"69f7ecadec46fc6af8630a00\" }"
+  },
+  {
+    "name": "delete_qzone_mood",
+    "status": "OK",
+    "ms": 127,
+    "text": "{ \"success\": true, \"message\": \"说说删除成功\", \"tid\": \"69f7ecadec46fc6af8630a00\" }"
+  }
+]

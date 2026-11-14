@@ -1,0 +1,32 @@
+[
+  {
+    "name": "set_reminder",
+    "status": "FAIL",
+    "ms": 3,
+    "text": "{ \"success\": false, \"message\": \"无法解析时间格式\\\"+10m\\\"。支持格式：5分钟后、14:30、2024-01-15 14:30、每天14:30、每周一14:30\" }"
+  },
+  {
+    "name": "list_reminders",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message\": \"📭 当前没有设置任何提醒\", \"reminders\": [] }"
+  },
+  {
+    "name": "schedule_task",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"error\": \"无法解析时间，请使用如\\\"5分钟后\\\"、\\\"明天早上8点\\\"等格式\" }"
+  },
+  {
+    "name": "list_my_scheduled_tasks",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message\": \"你目前没有待执行的定时任务\", \"tasks\": [] }"
+  },
+  {
+    "name": "list_my_scheduled_tasks",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"message\": \"你目前没有待执行的定时任务\", \"tasks\": [] }"
+  }
+]

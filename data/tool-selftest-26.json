@@ -1,0 +1,38 @@
+[
+  {
+    "name": "translate",
+    "status": "OK",
+    "ms": 1290,
+    "text": "{ \"success\": true, \"original\": \"hello world\", \"translated\": \"你好 世界\", \"from\": \"en\", \"to\": \"zh\" }"
+  },
+  {
+    "name": "read_file",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"file_path\": \"/root/TRSS_AllBot/TRSS-Yunzai/plugins/chatai-plugin/data/instance.json\", \"size\": 88, \"content\": \"{\\n \\\"instanceId\\\": \\\"c7fc372d-ba1f-4386-8491-9ef2b6879f21\\\",\\n \\\"createdAt\\\": 1793709125819\\n}\", \"encoding\": \"utf8\" }"
+  },
+  {
+    "name": "list_directory",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"dir_path\": \"/root/TRSS_AllBot/TRSS-Yunzai/plugins/chatai-plugin/data\", \"count\": 5, \"items\": [ { \"name\": \"EmojiThief\", \"path\": \"EmojiThief\", \"type\": \"directory\", \"size\": 4096, \"modified\": \"2026-11-08T10:23:19.220Z\" }, { \"name"
+  },
+  {
+    "name": "get_file_info",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"file_path\": \"/root/TRSS_AllBot/TRSS-Yunzai/plugins/chatai-plugin/data/instance.json\", \"type\": \"file\", \"size\": 88, \"created\": \"2026-11-15T00:01:12.424Z\", \"modified\": \"2026-11-03T12:32:05.819Z\", \"accessed\": \"2026-11-17T11:00:55.990Z\", \"permissions\": \"100644\" }"
+  },
+  {
+    "name": "get_message_record",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"source\": \"current_event\", \"msgrecord\": { \"message_id\": \"sandbox-mwkpf26y-u1whiq\", \"seq\": 0, \"rand\": 0, \"time\": 1794920661, \"user_id\": 203231682, \"sender\": { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"me"
+  },
+  {
+    "name": "generate_video",
+    "status": "FAIL",
+    "ms": 4,
+    "text": "{ \"success\": false, \"error\": \"视频生成未启用：当前绘图渠道不支持视频模型，可在 features.imageGen.videoEnabled 开启并配置支持视频的 API\" }"
+  }
+]

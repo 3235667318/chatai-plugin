@@ -545,11 +545,32 @@ class UsageStats {
                         return null
                     }
                 })
-                .filter(record => record && typeof record === 'object')
-        const applyFilters = input => {
-            let records = input
-            if (hasValue(safeFilter.channelId)) {
-                records = records.filter(record => record.channelId === safeFilter.channelId)
+                .filter(Boolean)
+        } catch {
+            records = [...this.recentStats]
+        }
+
+        // 应用过滤器
+        if (filter.channelId) {
+            records = records.filter(r => r.channelId === filter.channelId)
+        }
+        if (filter.model) {
+            records = records.filter(r => r.model === filter.model)
+        }
+        if (filter.success !== undefined) {
+            records = records.filter(r => r.success === filter.success)
+        }
+        if (filter.source) {
+            const sourceAliases = {
+                memory_group: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                memory_user: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
+                memory_extract: ['memory_extract', '记忆提取'],
+                群记忆: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                群记忆总结: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                用户记忆: ['memory_user', '记忆总结', '用户记忆'],
+                记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
+                个人记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
+                记忆提取: ['memory_extract', '记忆提取']
             }
             if (hasValue(safeFilter.model)) {
                 records = records.filter(record => record.model === safeFilter.model)

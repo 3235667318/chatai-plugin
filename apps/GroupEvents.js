@@ -17,6 +17,7 @@
 import config from '../config/config.js'
 import { getBotIds } from '../src/utils/messageDedup.js'
 import { isIgnoredBot } from '../src/utils/botFilter.js'
+import { groupEventFeed } from '../src/services/events/GroupEventFeed.js'
 import { isGroupFeatureEnabled } from '../src/services/scope/ScopeManager.js'
 import {
     parseBanEvent,
@@ -333,6 +334,11 @@ let eventListenersRegistered = false
  */
 async function handleGroupEvent(eventType, e, bot) {
     bot = e?.bot || bot
+    try {
+        logger.mark(
+            `[GroupEvent] ${eventType} | group=${e?.group_id} user=${e?.user_id} operator=${e?.operator_id} sub=${e?.sub_type || ''}`
+        )
+    } catch {}
     if (isIgnoredBot(e)) return
 
     // 群事件也遵守聊天黑白名单：非白名单群/黑名单群不响应
@@ -533,6 +539,26 @@ async function handleGroupEvent(eventType, e, bot) {
 /**
  * 支持: icqq / NapCat / go-cqhttp / LLOneBot / Lagrange / TRSS
  */
+/** 捕获所有 notice.* 事件，供聊天上下文使用 */
+function installNoticeTap() {
+    const BotObj = globalThis.Bot
+    if (!BotObj || globalThis.__chataiNoticeTap) return
+    const orig = BotObj.emit.bind(BotObj)
+    BotObj.emit = (name, ...args) => {
+        try {
+            if (typeof name === 'string' && name.startsWith('notice.')) {
+                groupEventFeed.add(name, args[0])
+            }
+        } catch {}
+        return orig(name, ...args)
+    }
+    globalThis.__chataiNoticeTap = true
+}
+try {
+    installNoticeTap()
+    setTimeout(installNoticeTap, 3000)
+} catch {}
+
 function registerEventListeners() {
     if (eventListenersRegistered) return
     eventListenersRegistered = true

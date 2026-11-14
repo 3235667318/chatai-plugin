@@ -117,10 +117,35 @@ class MemoryService {
      * @param {Object} [memory.metadata] - 元数据
      * @returns {Object} 保存的记忆
      */
+    /** 判断内容是否是模型分析残留、原文引用或无信息量的闲聊 */
+    isJunkMemoryContent(content) {
+        return !this.isMeaningfulMemory(content)
+    }
+
+    /** 个人记忆必须是“事实陈述”，否则视为垃圾 */
+    isMeaningfulMemory(content) {
+        const t = String(content || '').trim()
+        if (t.length < 4) return false
+        if (/^\[/.test(t)) return false
+        if (/(输出|JSON|类别[:：]|不是长期|删除。|——|可能|推测|片段|这句话|这条消息|原话|引用|助手)/.test(t)) return false
+        if (/没有.{0,8}(信息|发言|明确|记录|内容)/.test(t)) return false
+        if (/可以(记|存|保留|算)|是否|要不要/.test(t)) return false
+        if (/[？?！!]$/.test(t)) return false
+        if (/用户说[:：]|我说[:：]/.test(t)) return false
+        if (/[-—]\s*(基本信息|偏好|习惯|偏好\/习惯|基本信息\/资料)/.test(t)) return false
+        if (/^(友|早|那|这|咋|哈|嗯|哦)/.test(t) && !/用户/.test(t)) return false
+        const factVerb = '(是|叫|喜欢|爱|玩|住|在|有|会|经常|每天|周末|讨厌|认为|觉得|生日|年龄|职业|习惯|称呼|群昵称|QQ号)'
+        const marked = /(用户|QQ号|群昵称|称呼)/.test(t) && new RegExp(factVerb).test(t)
+        const named = new RegExp('^[^(（]{1,20}[（(]\\d{5,12}[)）]\\s*' + factVerb).test(t)
+        if (!marked && !named) return false
+        if (t.length > 100) return false
+        return true
+    }
+
     async saveMemory(memory) {
         await this.ensureInit()
 
-        const {
+        let {
             userId,
             groupId = null,
             category,
@@ -145,6 +170,12 @@ class MemoryService {
 
         if (!isValidCategory(category)) {
             throw new Error(`Invalid category: ${category}`)
+        }
+
+        // 拦截“分析过程/原文引用/闲聊”这类无意义记忆
+        if (this.isJunkMemoryContent(content)) {
+            logger.debug(`[MemoryService] 跳过无意义记忆: ${String(content).slice(0, 60)}`)
+            return { skipped: true, reason: 'junk', content }
         }
 
         const now = Date.now()
@@ -446,6 +477,29 @@ class MemoryService {
     /**
      * 获取群组记忆
      */
+    /** 群记忆列表：按群聚合（user_id 形如 群<群号>） */
+    async listGroups() {
+        await this.ensureInit()
+        const db = databaseService.db
+        const rows = db
+            .prepare(
+                `SELECT group_id, user_id, COUNT(*) as count, MAX(updated_at) as last_update,
+                        GROUP_CONCAT(DISTINCT category) as categories
+                 FROM structured_memories
+                 WHERE is_active = 1 AND group_id IS NOT NULL AND user_id LIKE '群%'
+                 GROUP BY group_id
+                 ORDER BY last_update DESC`
+            )
+            .all()
+        return rows.map(row => ({
+            groupId: String(row.group_id),
+            userId: row.user_id,
+            count: row.count,
+            lastUpdate: row.last_update,
+            categories: row.categories ? row.categories.split(',') : []
+        }))
+    }
+
     async getMemoriesByGroup(groupId, options = {}) {
         await this.ensureInit()
         const db = databaseService.db

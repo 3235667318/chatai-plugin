@@ -1,0 +1,110 @@
+[
+  {
+    "name": "get_group_muted_list",
+    "status": "OK",
+    "ms": 1006,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"count\": 0, \"muted_members\": [] }"
+  },
+  {
+    "name": "get_group_files",
+    "status": "OK",
+    "ms": 340,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1074031485, \"count\": 16, \"files\": [ { \"name\": \"大肥鱼表情包.zip\", \"id\": \"b9a826d6ac134ae9a78fb84c291b93f1\", \"size\": 85545610, \"type\": \"file\", \"uploader\": 1944194556 }, { \"name\": \"c45ad617e99727264"
+  },
+  {
+    "name": "get_group_file_system_info",
+    "status": "OK",
+    "ms": 159,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"file_count\": 18, \"limit_count\": 10000, \"used_space\": 0, \"total_space\": 10737418240 }"
+  },
+  {
+    "name": "get_group_honor",
+    "status": "OK",
+    "ms": 178,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"type\": \"all\", \"honor\": { \"group_id\": 1074031485, \"current_talkative\": {}, \"talkative_list\": [], \"performer_list\": [], \"legend_list\": [], \"emotion_list\": [], \"strong_newbie_list\": [] }, \"_tip\": \"talkative是龙王(发言最多)，per"
+  },
+  {
+    "name": "get_group_stat",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"max_member_count\": 500, \"stats\": { \"total\": 1, \"owner\": 0, \"admin\": 0, \"member\": 1, \"male\": 0, \"female\": 0, \"unknown_sex\": 1 }, \"_tip\": \"owner是群主(只有1个)，admin是管理员，member是普通成员。male/female/unkno"
+  },
+  {
+    "name": "get_random_group_member",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"total_members\": 1, \"filtered_count\": 1, \"selected_count\": 1, \"members\": [ { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"title\": \"\", \"display_name\""
+  },
+  {
+    "name": "get_recent_join_members",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"filter_criteria\": \"最近7天入群\", \"group_total_members\": 1, \"new_member_count\": 0, \"new_members\": [], \"_tip\": \"join_time是入群时间，last_speak_time显示最后发言时间或\\\"从未发言\\\"，列表按入群时间倒序排列(最新的在前)\" }"
+  },
+  {
+    "name": "get_inactive_members",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"filter_criteria\": \"30天内未发言\", \"group_total_members\": 1, \"inactive_count\": 1, \"inactive_members\": [ { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"join_time\": \"\", \"last_speak_time\": \"从未发言\", \"r"
+  },
+  {
+    "name": "get_group_data",
+    "status": "FAIL",
+    "ms": 71,
+    "text": "{ \"success\": false, \"error\": \"Get summary data failure!\" }"
+  },
+  {
+    "name": "get_speak_rank",
+    "status": "FAIL",
+    "ms": 60,
+    "text": "{ \"success\": false, \"error\": \"Get speak rank data failure!\", \"_debug\": { \"msg\": \"Get speak rank data failure!\", \"retcode\": 300103 } }"
+  },
+  {
+    "name": "get_sign_in_today",
+    "status": "OK",
+    "ms": 62,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"signed_count\": 4, \"signed_members\": [ { \"user_id\": \"3072009024\", \"nickname\": \"星.\", \"sign_time\": \"2026-11-17 00:50:04\" }, { \"user_id\": \"2769099155\", \"nickname\": \"核桃\", \"sign_time\": \"2026-11-17 06:35:23\""
+  },
+  {
+    "name": "get_dragon_king",
+    "status": "OK",
+    "ms": 46,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"has_dragon_king\": false, \"dragon_king\": null, \"_tip\": \"该群当前没有龙王，可能是今日还没有人发言或群未开启此功能\" }"
+  },
+  {
+    "name": "get_group_level",
+    "status": "OK",
+    "ms": 40,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"level\": null, \"level_name\": \"无星级\", \"group_name\": \"\", \"group_uin\": 1074031485, \"_tip\": \"该群暂无星级数据，可能是新群、不活跃的群或未开启星级功能\" }"
+  },
+  {
+    "name": "get_friend_list",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"total\": 134, \"returned\": 50, \"friends\": [ { \"user_id\": 2054217991, \"nickname\": \"恨我坏的彻底\", \"remark\": \"\", \"avatar_url\": \"https://q.qlogo.cn/g?b=qq&s=0&nk=2054217991\" }, { \"user_id\": 2388989195, \"nickname\": \"端木若瑛\", \"remark"
+  },
+  {
+    "name": "get_user_info",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"remark\": \"\", \"sex\": \"unknown\", \"age\": 22, \"is_friend\": true, \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "get_sender_info",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"title\": \"\", \"sex\": \"unknown\", \"avatar_url\": \"\", \"is_group\": true, \"is_friend\": true, \"group_id\": 1074031485, \"group_name\": \"群1074031485\" }"
+  },
+  {
+    "name": "check_is_friend",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"user_id\": 203231682, \"is_friend\": true, \"nickname\": \"宝了个贝\", \"remark\": null, \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "get_user_profile",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"sex\": \"unknown\", \"age\": 22, \"level\": 78, \"sign\": \"\", \"is_friend\": true, \"remark\": \"\", \"avatar_url\": \"\" }"
+  }
+]

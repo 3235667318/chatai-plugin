@@ -227,7 +227,7 @@ export class ChatService {
             skipPersona = false, // 跳过人设获取（用于总结等场景）
             temperature: overrideTemperature, // 覆盖温度参数
             maxTokens: overrideMaxTokens, // 覆盖最大token参数
-            source = 'chat' // 统计来源标签（chat/game/bym等）
+            source = options.mode === 'bym' ? 'bym' : options.mode === 'game' ? 'game' : 'chat' // 统计来源标签（chat/game/bym等）
         } = options
 
         // 调试信息收集
@@ -567,6 +567,71 @@ export class ChatService {
                 userId: event?.user_id || userId
             })
             allTools = applySkillToolConstraints(allTools, skillToolConstraints)
+            // 群聊里别让模型用"发私聊/发主人"工具回复，否则会把回复发到私聊
+            if (event?.group_id) {
+                const privateOnly = new Set([
+                    'send_to_master',
+                    'send_private_message',
+                    'send_private_msg',
+                    'send_msg_to_user',
+                    // 聊天回复会把 @名字 转成真实 at，工具再发一次就会重复
+                    'at_user',
+                    'send_message',
+                    'send_group_message',
+                    'send_msg',
+                    'send_group_msg'
+                ])
+                allTools = allTools.filter(t => !privateOnly.has(t?.name))
+            }
+            // 按意图裁剪工具类别：减少每次请求的 schema token
+            try {
+                if (config.get('tools.intentFilter') !== false) {
+                    const msg = String(message || event?.msg || '')
+                    const cats = new Set()
+                    if (/搜|查一下|查询|新闻|最新|资料|百科|天气/.test(msg)) ['web', 'search', 'utils'].forEach(c => cats.add(c))
+                    if (/画|绘图|生图|表情包|自拍|梗图|修图/.test(msg)) ['imageGen', 'emoji', 'media'].forEach(c => cats.add(c))
+                    if (/禁言|踢|管理员|头衔|群公告|撤回/.test(msg)) ['admin', 'groupStats'].forEach(c => cats.add(c))
+                    if (/提醒|定时|闹钟|几点|叫我|记得|倒计时/.test(msg)) ['schedule', 'reminder'].forEach(c => cats.add(c))
+                    if (/搜索|搜一下|百度|谷歌/.test(msg)) ['web', 'search'].forEach(c => cats.add(c))
+                    if (/语音|唱歌|音频|音乐/.test(msg)) ['voice', 'media'].forEach(c => cats.add(c))
+                    // 工具名 -> 类别映射（来自 MCP 内置分类）
+                    if (!globalThis.__toolCategoryMap) {
+                        try {
+                            const { getCategoryInfo } = await import('../../mcp/tools/index.js')
+                            const infos = await getCategoryInfo()
+                            const map = new Map()
+                            for (const info of infos) {
+                                for (const t of info.tools || []) map.set(t.name, info.key)
+                            }
+                            globalThis.__toolCategoryMap = map
+                        } catch {
+                            globalThis.__toolCategoryMap = new Map()
+                        }
+                    }
+                    const nameToCat = globalThis.__toolCategoryMap
+                    // 基础工具白名单：日常聊天只需要这些
+                    const baseTools = new Set([
+                        'reply_current_message',
+                        'at_user',
+                        'get_current_time',
+                        'get_group_info',
+                        'get_group_member_list',
+                        'get_sender_info',
+                        'search_memory',
+                        'save_memory',
+                        'get_memory'
+                    ])
+                    const before = allTools.length
+                    allTools = allTools.filter(t => {
+                        if (baseTools.has(t.name)) return true
+                        const cat = t.category || nameToCat.get(t.name)
+                        return !!cat && cats.has(cat)
+                    })
+                    logger.mark(`[ChatService] 意图裁剪工具: ${before} -> ${allTools.length}`)
+                }
+            } catch (err) {
+                logger.debug('[ChatService] 工具意图裁剪失败:', err.message)
+            }
             logger.debug(`[ChatService] 加载工具: ${allTools.length}个`)
         } else if (toolApprovalMode === 'ask') {
             logger.debug('[ChatService] ask 模式：不向模型暴露工具')
@@ -1196,6 +1261,20 @@ export class ChatService {
             logger.warn('[ChatService] 按需搜索失败:', err.message)
         }
 
+        // 最近群事件（戳一戳/禁言/撤回等）：让模型知道群里刚发生了什么
+        if (groupId) {
+            try {
+                const { groupEventFeed } = await import('../events/GroupEventFeed.js')
+                const eventBlock = groupEventFeed.buildBlock(String(groupId))
+                if (eventBlock) {
+                    priorityContext.push(eventBlock)
+                    logger.debug(`[ChatService] 注入群事件 ${eventBlock.length} 字`)
+                }
+            } catch (err) {
+                logger.debug('[ChatService] 群事件注入失败:', err.message)
+            }
+        }
+
         // 动态上下文体积控制（优先级：说话人 > 记忆 > 群记忆 > 知识图谱），并入本轮用户消息
         const MAX_DYNAMIC_CHARS = 600
         if (dynamicContext.length > 0 || priorityContext.length > 0) {
@@ -1206,7 +1285,7 @@ export class ChatService {
                 if (idx > 0 && dynamicText.length + block.length > MAX_DYNAMIC_CHARS) return
                 dynamicText += block
             })
-            if (dynamicText.trim()) {
+            if (config.get('context.dynamicContext') !== false && dynamicText.trim()) {
                 const wrap = `【本轮上下文（仅参考，不用复述）】${dynamicText}\n【以上是上下文，下面才是用户的话】\n`
                 if (typeof userMessage.content === 'string') {
                     userMessage.content = wrap + userMessage.content

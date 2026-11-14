@@ -1,0 +1,68 @@
+[
+  {
+    "name": "mute_member",
+    "status": "FAIL",
+    "ms": 387,
+    "text": "{ \"success\": false, \"error\": \"管理员无法对其他管理员(2917988201)执行此操作，只有群主可以\", \"isError\": true, \"permissionDenied\": true }"
+  },
+  {
+    "name": "mute_member",
+    "status": "FAIL",
+    "ms": 433,
+    "text": "{ \"success\": false, \"error\": \"管理员无法对其他管理员(2917988201)执行此操作，只有群主可以\", \"isError\": true, \"permissionDenied\": true }"
+  },
+  {
+    "name": "set_reminder",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"message\": \"✅ 提醒已设置！\\n📝 内容：【工具自检】提醒\\n⏰ 时间：2026/11/17 20:31:54（4分钟后）\", \"reminderId\": \"reminder_1\" }"
+  },
+  {
+    "name": "list_reminders",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"message\": \"📋 你的提醒列表（共1个）：\\n\\n🔔 reminder_1\\n 内容：【工具自检】提醒\\n 时间：5分钟后\\n 类型：一次性\\n 状态：scheduled\", \"reminders\": [ { \"id\": \"reminder_1\", \"time\": \"5分钟后\", \"message\": \"【工具自检】提醒\", \"target\": \"group:1002731262\", \"userId\": \"203231682\", \"gr"
+  },
+  {
+    "name": "cancel_reminder",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message\": \"✅ 已取消提醒：【工具自检】提醒\" }"
+  },
+  {
+    "name": "schedule_task",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"message\": \"好的，5分钟后（11/17 20:31）我会【工具自检】任务\", \"task_id\": \"mwko2wdwi8pf\", \"execute_at\": \"11/17 20:31\", \"remaining\": \"5分钟\" }"
+  },
+  {
+    "name": "list_my_scheduled_tasks",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"total\": 1, \"tasks\": [ { \"id\": \"mwko2wdwi8pf\", \"content\": \"【工具自检】任务\", \"time\": \"5分钟后\", \"remaining\": \"5分钟\", \"target\": null } ] }"
+  },
+  {
+    "name": "cancel_scheduled_task",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message\": \"已取消任务：【工具自检】任务\" }"
+  },
+  {
+    "name": "get_ai_voice_characters",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"protocol\": \"onebot\", \"source\": \"local_config\", \"count\": 30, \"characters\": [ { \"id\": \"lucy-voice-laibixiaoxin\", \"name\": \"小新\", \"category\": \"推荐\" }, { \"id\": \"lucy-voice-houge\", \"name\": \"猴哥\", \"category\": \"推荐\" }, { "
+  },
+  {
+    "name": "get_ai_record",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"获取AI语音失败: 当前协议端不支持 ai_voice\" }"
+  },
+  {
+    "name": "generate_image",
+    "status": "OK",
+    "ms": 26050,
+    "text": "{ \"success\": true, \"images\": [ \"base64:///9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCASAAwADASIAAhEBAxEB/8QAHgAAAQUBAQE"
+  }
+]

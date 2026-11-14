@@ -1,0 +1,56 @@
+[
+  {
+    "name": "get_avatar",
+    "status": "OK",
+    "ms": 26,
+    "text": "{ \"success\": true, \"type\": \"user\", \"id\": \"203231682\", \"size\": 640, \"url\": \"\" }"
+  },
+  {
+    "name": "get_profile_like",
+    "status": "OK",
+    "ms": 10181,
+    "text": "{ \"success\": true, \"like_info\": { \"uid\": \"u_T9_XUcBPZOcrszAY3dpkZg\", \"time\": 1503536982, \"favoriteInfo\": { \"total_count\": 71771, \"last_time\": 20261117, \"today_count\": 120, \"userInfos\": [ { \"uid\": \"u_xt1Z4FuKLQXJ6mu22w6dFw\", \"src\": 7"
+  },
+  {
+    "name": "get_message_record",
+    "status": "FAIL",
+    "ms": 3,
+    "text": "Error: Converting circular structure to JSON --> starting at object with constructor 'Object' | property 'runtime' -> object with constructor 'Runtime' --- property 'e' closes the circle"
+  },
+  {
+    "name": "search_emoji",
+    "status": "OK",
+    "ms": 381,
+    "text": "{ \"success\": true, \"count\": 1, \"message\": \"已发送 1 张表情包\" }"
+  },
+  {
+    "name": "search_image_bing",
+    "status": "OK",
+    "ms": 274,
+    "text": "{ \"success\": true, \"count\": 3, \"message\": \"已发送 3 张图片\" }"
+  },
+  {
+    "name": "search_wallpaper",
+    "status": "FAIL",
+    "ms": 77,
+    "text": "{ \"error\": \"未找到相关壁纸\" }"
+  },
+  {
+    "name": "bilibili_search",
+    "status": "FAIL",
+    "ms": 549,
+    "text": "{ \"error\": \"B站搜索失败: Unexpected token '<', \\\"<!DOCTYPE \\\"... is not valid JSON\" }"
+  },
+  {
+    "name": "search_music_qq",
+    "status": "OK",
+    "ms": 238,
+    "text": "{ \"success\": true, \"song\": { \"name\": \"晴天\", \"artist\": \"周杰伦\", \"mid\": \"0039MnYb0qxYhV\" }, \"message\": \"已发送音乐：晴天 - 周杰伦\" }"
+  },
+  {
+    "name": "get_group_member_list",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_name\": \"群1074031485\", \"total\": 1, \"returned\": 1, \"members\": [ { \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\", \"title\": \"\" } ] }"
+  }
+]

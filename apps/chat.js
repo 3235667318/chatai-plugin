@@ -96,7 +96,9 @@ export class Chat extends plugin {
      */
     async handleMessage() {
         // 忽略被屏蔽的 Bot（避免同群双 Bot 重复回复）
-        if (isIgnoredBot(this.e)) return false
+        if (isIgnoredBot(this.e)) {
+            return false
+        }
         const e = this.e
 
         if (isSelfMessage(e)) return false
@@ -105,6 +107,37 @@ export class Chat extends plugin {
         const ignoreUsers = config.get('trigger.ignoreUsers') || []
         if (ignoreUsers.map(String).includes(String(e.user_id))) return false
         if (isMessageProcessed(e)) return false
+
+
+        // 同一内容短时间只发送一次，防止各种路径重复发送 @ 消息
+        try {
+            if (!this.__sendDedupePatched) {
+                this.__sendDedupePatched = true
+                const origReply = this.reply.bind(this)
+                const sentReplies = (globalThis.__chatSentReplies ||= new Map())
+                this.reply = async (payload, ...rest) => {
+                    let key = ''
+                    try {
+                        if (typeof payload === 'string') key = payload.trim()
+                        else if (Array.isArray(payload)) {
+                            key = payload
+                                .map(p => (typeof p === 'string' ? p : p?.data?.text || p?.text || p?.type || ''))
+                                .join('|')
+                                .trim()
+                        } else key = JSON.stringify(payload)
+                    } catch {}
+                    const now = Date.now()
+                    if (key) {
+                        for (const [k, t] of sentReplies) if (now - t > 8000) sentReplies.delete(k)
+                        if (sentReplies.has(key)) {
+                            return { message_id: null }
+                        }
+                        sentReplies.set(key, now)
+                    }
+                    return origReply(payload, ...rest)
+                }
+            }
+        } catch {}
 
         const approvalInput = toolApprovalService.resolveApproval(e.msg || '', {
             event: e,
@@ -681,10 +714,21 @@ export class Chat extends plugin {
                 await this.warmMemberMap()
                 const replyContent = this.formatReply(result.response)
                 if (replyContent) {
-                    const replyTextContent = result.response
+                    let replyTextContent = result.response
                         .filter(c => c.type === 'text')
                         .map(c => c.text)
                         .join('\n')
+                    // 模型偶尔把同一行输出两次，逐行发送就会变成两条相同消息
+                    try {
+                        const rawLines = replyTextContent.split('\n')
+                        const dedupedLines = []
+                        for (const line of rawLines) {
+                            const prev = dedupedLines[dedupedLines.length - 1]
+                            if (prev !== undefined && line.trim() && prev.trim() === line.trim()) continue
+                            dedupedLines.push(line)
+                        }
+                        replyTextContent = dedupedLines.join('\n')
+                    } catch {}
                     if (replyTextContent) {
                         recordSentMessage(replyTextContent)
 
@@ -762,7 +806,7 @@ export class Chat extends plugin {
                                 }
                                 for (let i = 0; i < lines.length; i++) {
                                     const parts = this.processAtMentions(lines[i])
-                                    const payload = parts.length > 1 ? parts : lines[i]
+                                    const payload = parts.length === 1 ? parts[0] : parts
                                     const replyResult = await this.reply(payload, quoteReply && i === 0)
                                     if (i === 0) this.handleAutoRecall(replyResult, false)
                                     if (i < lines.length - 1) {
@@ -858,7 +902,8 @@ export class Chat extends plugin {
                                     }
                                 }
                             })
-                            if (sent.folded || sent.messageIds.length > 0) {
+                            // 只要分段发送执行过就算已处理，否则会再走一次兜底 e.reply，导致重复消息
+                            if (sent && !sent.error) {
                                 handled = true
                             }
                         }
@@ -997,14 +1042,16 @@ export class Chat extends plugin {
 
         // 收集群成员：群名片/昵称 -> QQ
         const memberMap = this.memberMapOf()
-        const byName = new Map()
+        const byName = new Map() // 名字 -> Set(QQ)，同名时一起 @
         if (memberMap instanceof Map) {
             for (const [uid, member] of memberMap) {
                 const id = Number(member?.user_id || uid)
                 if (!Number.isFinite(id)) continue
                 for (const raw of [member?.card, member?.nickname, member?.nick]) {
                     const name = String(raw || '').trim()
-                    if (name && !byName.has(name)) byName.set(name, id)
+                    if (!name) continue
+                    if (!byName.has(name)) byName.set(name, new Set())
+                    byName.get(name).add(id)
                 }
             }
         }
@@ -1020,10 +1067,11 @@ export class Chat extends plugin {
         // @群名片/昵称（长名字优先，避免「小明」把「小明同学」切坏）
         if (byName.size > 0) {
             const names = [...byName.keys()].filter(n => n.length >= 2).sort((a, b) => b.length - a.length)
+            const atMarkers = name => [...(byName.get(name) || [])].map(id => MARK + id + END).join('')
             for (const name of names) {
                 const token = '@' + name
                 if (!str.includes(token)) continue
-                str = str.split(token).join(MARK + byName.get(name) + END)
+                str = str.split(token).join(atMarkers(name))
             }
         }
 
@@ -1036,7 +1084,7 @@ export class Chat extends plugin {
                 if (w.length < 2) return raw
                 const hit = names.find(n => n === w || n.startsWith(w) || w.startsWith(n)) ||
                     names.find(n => n.includes(w) || w.includes(n))
-                return hit ? MARK + byName.get(hit) + END : raw
+                return hit ? [...(byName.get(hit) || [])].map(id => MARK + id + END).join('') : raw
             })
         }
 
@@ -1052,8 +1100,17 @@ export class Chat extends plugin {
         }
         if (last < str.length) parts.push(str.slice(last))
 
-        const cleaned = parts.filter(p => typeof p !== 'string' || p.trim())
-        const ats = cleaned.filter(p => p && p.type === 'at').map(p => p.qq)
+        // 真 at 已经生成，文本里残留的 @名字@QQ、@QQ 全部清掉
+        const stripMentionText = t =>
+            String(t)
+                .replace(/@[^\s@]{0,40}@?\d{5,12}/g, '')
+                .replace(/@\d{5,12}/g, '')
+                .replace(/[ \t]{2,}/g, ' ')
+                .trim()
+        const cleaned = parts
+            .map(p => (typeof p === 'string' ? stripMentionText(p) : p))
+            .filter(p => (typeof p === 'string' ? p.trim() : true))
+        const ats = cleaned.filter(p => p && p.type === 'at').map(p => p.data?.qq ?? p.qq)
         if (ats.length > 0) logger.mark(`[Chat] @转换成功: ${ats.join(',')} | 原文: ${String(text).slice(0, 80)}`)
         else if (String(text).includes('@')) logger.mark(`[Chat] @未转换: ${String(text).slice(0, 80)}`)
         return cleaned.length > 0 ? cleaned : [text]

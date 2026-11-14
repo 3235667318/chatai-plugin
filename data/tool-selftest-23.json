@@ -1,0 +1,50 @@
+[
+  {
+    "name": "get_ai_voice_characters",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"protocol\": \"onebot\", \"source\": \"local_config\", \"count\": 30, \"characters\": [ { \"id\": \"lucy-voice-laibixiaoxin\", \"name\": \"小新\", \"category\": \"推荐\" }, { \"id\": \"lucy-voice-houge\", \"name\": \"猴哥\", \"category\": \"推荐\" }, { "
+  },
+  {
+    "name": "send_tts",
+    "status": "FAIL",
+    "ms": 61,
+    "text": "{ \"success\": false, \"error\": \"VITS 服务不可达（ENOTFOUND），请检查服务状态或稍后重试\" }"
+  },
+  {
+    "name": "get_ai_record",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "{ \"success\": false, \"error\": \"缺少必需参数: character (角色/音色ID)\", \"missing_params\": [ \"character (角色/音色ID)\" ] }"
+  },
+  {
+    "name": "send_ai_voice",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"发送AI语音失败: 当前协议端不支持 ai_voice\" }"
+  },
+  {
+    "name": "send_voice",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"completed\": true, \"message\": \"语音消息已发送\", \"message_id\": \"sandbox-mwknwrf8\" }"
+  },
+  {
+    "name": "send_image",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwknwrfb\" }"
+  },
+  {
+    "name": "send_video",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message_id\": \"sandbox-mwknwrfc\" }"
+  },
+  {
+    "name": "generate_qrcode",
+    "status": "OK",
+    "ms": 1,
+    "text": "https://example.com"
+  }
+]

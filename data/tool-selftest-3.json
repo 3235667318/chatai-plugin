@@ -1,0 +1,98 @@
+[
+  {
+    "name": "get_chat_history",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"source\": \"standard.history\", \"is_group\": true, \"target_id\": 1074031485, \"count\": 0, \"messages\": [] }"
+  },
+  {
+    "name": "get_essence_msg_list",
+    "status": "OK",
+    "ms": 848,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"count\": 69, \"messages\": [ { \"msg_seq\": 436197, \"msg_random\": 623046819, \"sender_id\": 346961035, \"sender_nick\": \"普普\", \"operator_id\": 2475136340, \"operator_nick\": \"洛婉(本群太师祖&师祖&师尊)\", \"message_id\": 73500584"
+  },
+  {
+    "name": "list_reminders",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"message\": \"📭 当前没有设置任何提醒\", \"reminders\": [] }"
+  },
+  {
+    "name": "list_my_scheduled_tasks",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"message\": \"你目前没有待执行的定时任务\", \"tasks\": [] }"
+  },
+  {
+    "name": "get_user_memories",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"user_id\": \"203231682\", \"count\": 0, \"memories\": [] }"
+  },
+  {
+    "name": "search_user_memory",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"user_id\": \"203231682\", \"query\": \"群\", \"count\": 0, \"results\": [] }"
+  },
+  {
+    "name": "get_current_context",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"is_group\": true, \"group_id\": 1074031485, \"user_id\": 203231682, \"sender\": { \"nickname\": \"宝了个贝\", \"card\": \"宝了个贝\", \"role\": \"member\" }, \"bot_id\": 2917988201, \"message_id\": \"sandbox-mwkmtjap-wwfd8o\", \"time\": 1794916297 }"
+  },
+  {
+    "name": "get_group_context",
+    "status": "OK",
+    "ms": 3,
+    "text": "{ \"success\": true, \"group_id\": \"1074031485\", \"topics\": [], \"relations\": [], \"user_count\": 30 }"
+  },
+  {
+    "name": "kg_stats",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"scope_id\": \"group:1074031485:user:203231682\", \"stats\": { \"entityCount\": 2, \"relationshipCount\": 0, \"typeStats\": { \"person\": 2 } } }"
+  },
+  {
+    "name": "kg_list_entities",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"scope_id\": \"group:1074031485:user:203231682\", \"mode\": \"group_user\", \"count\": 2, \"entities\": [ { \"entity_id\": \"group:1074031485:user:203231682:entity:eca1005d\", \"name\": \"洛婉\", \"type\": \"person\", \"scope_id\": \"group:1074031485:user:203231682\", "
+  },
+  {
+    "name": "list_saved_emojis",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"total\": 500, \"maxCount\": 500, \"enabled\": true, \"triggerMode\": \"chat_random\", \"emojis\": [ { \"index\": 0, \"name\": \"009a3d8c65143b27a405a94502a7a1a5.gif\", \"type\": \"gif\" }, { \"index\": 1, \"name\": \"00e7ba60292002708140d66ca130fdef.gi"
+  },
+  {
+    "name": "get_face_list",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"count\": 77, \"faces\": [ { \"id\": 0, \"name\": \"惊讶\" }, { \"id\": 1, \"name\": \"撇嘴\" }, { \"id\": 2, \"name\": \"色\" }, { \"id\": 4, \"name\": \"得意\" }, { \"id\": 5, \"name\": \"流泪\" }, { \"id\":"
+  },
+  {
+    "name": "get_tool_info",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "Tool not found: get_tool_info"
+  },
+  {
+    "name": "list_available_tools",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "Tool not found: list_available_tools"
+  },
+  {
+    "name": "get_stranger_info",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"user_id\": 203231682, \"nickname\": \"宝了个贝\", \"sex\": \"unknown\", \"age\": 22, \"level\": 78, \"is_friend\": true, \"remark\": \"\", \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "search_group_history",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"keyword\": \"游戏\", \"group_id\": 1074031485, \"count\": 0, \"messages\": [] }"
+  }
+]

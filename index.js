@@ -182,7 +182,15 @@ const appsPromise = (async () => {
         })
     )
 })()
-const [appsResults, ...initResults] = await Promise.all([appsPromise, ...initTasks])
+const raceTimeout = (p, ms) =>
+    Promise.race([
+        p,
+        new Promise(resolve => setTimeout(() => resolve({ name: 'Timeout', status: 'warn', error: `超过 ${ms}ms` }), ms))
+    ])
+const [appsResults, ...initResults] = await Promise.all([
+    appsPromise,
+    ...initTasks.map(t => raceTimeout(t, 15000))
+])
 if (Array.isArray(appsResults)) {
     for (const result of appsResults) {
         if (result.status === 'fulfilled') {

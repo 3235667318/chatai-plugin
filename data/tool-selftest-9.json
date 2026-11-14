@@ -1,0 +1,50 @@
+[
+  {
+    "name": "save_user_memory",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"memory_id\": 878, \"user_id\": \"203231682\", \"category\": \"custom\", \"content\": \"自检写入的一条测试记忆\" }"
+  },
+  {
+    "name": "kg_save_entity",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"entity\": { \"entity_id\": \"group:1002731262:user:203231682:entity:5dc140b0\", \"name\": \"自检实体\", \"type\": \"test\", \"scope_id\": \"group:1002731262:user:203231682\", \"properties\": {}, \"version\": 1, \"updated_at\": 1794917260420 }, \"scope_id\": \"group:10027312"
+  },
+  {
+    "name": "kg_list_entities",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"scope_id\": \"group:1002731262:user:203231682\", \"mode\": \"group_user\", \"count\": 1, \"entities\": [ { \"entity_id\": \"group:1002731262:user:203231682:entity:5dc140b0\", \"name\": \"自检实体\", \"type\": \"test\", \"scope_id\": \"group:1002731262:user:203231682\", "
+  },
+  {
+    "name": "create_custom_tool",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"create_custom_tool\" 仅允许主人调用"
+  },
+  {
+    "name": "invoke_custom_tool",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"invoke_custom_tool\" 仅允许主人调用"
+  },
+  {
+    "name": "delete_custom_tool",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "工具 \"delete_custom_tool\" 仅允许主人调用"
+  },
+  {
+    "name": "send_saved_emoji",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"message\": \"已发送表情 83c2f3dfbcb583f423cc137697008199.gif\", \"sent\": true }"
+  },
+  {
+    "name": "send_like",
+    "status": "OK",
+    "ms": 167,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"user_id\": 3235667318, \"times\": 1 }"
+  }
+]

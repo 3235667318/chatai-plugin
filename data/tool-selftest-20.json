@@ -1,0 +1,50 @@
+[
+  {
+    "name": "mute_member",
+    "status": "FAIL",
+    "ms": 56,
+    "text": "{ \"success\": false, \"error\": \"管理员无法对其他管理员(3889046681)执行此操作，只有群主可以\", \"isError\": true, \"permissionDenied\": true }"
+  },
+  {
+    "name": "mute_member",
+    "status": "FAIL",
+    "ms": 6,
+    "text": "{ \"success\": false, \"error\": \"管理员无法对其他管理员(3889046681)执行此操作，只有群主可以\", \"isError\": true, \"permissionDenied\": true }"
+  },
+  {
+    "name": "set_group_card",
+    "status": "OK",
+    "ms": 1271,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1002731262, \"user_id\": 2917988201, \"card\": \"七七\" }"
+  },
+  {
+    "name": "send_group_notice",
+    "status": "OK",
+    "ms": 573,
+    "text": "{ \"success\": true, \"group_id\": 1002731262, \"content\": \"【工具自检】临时公告\" }"
+  },
+  {
+    "name": "delete_group_notice",
+    "status": "OK",
+    "ms": 137,
+    "text": "{ \"success\": true, \"group_id\": 1002731262, \"deleted_notice\": \"1002731262\" }"
+  },
+  {
+    "name": "set_group_name",
+    "status": "OK",
+    "ms": 287,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1002731262, \"name\": \"【主题】\" }"
+  },
+  {
+    "name": "set_group_whole_ban",
+    "status": "OK",
+    "ms": 271,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1002731262, \"action\": \"关闭全群禁言\" }"
+  },
+  {
+    "name": "set_group_admin",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"权限不足: 执行\\\"set_group_admin\\\"需要群主权限，当前Bot权限为admin\", \"isError\": true, \"permissionDenied\": true, \"required\": \"群主\", \"current\": \"admin\" }"
+  }
+]

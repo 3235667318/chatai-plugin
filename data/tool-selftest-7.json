@@ -1,0 +1,38 @@
+[
+  {
+    "name": "set_group_card",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"set_group_card\" 被标记为危险工具，已被拦截。如需使用，请在配置中启用 allowDangerous。"
+  },
+  {
+    "name": "set_group_special_title",
+    "status": "OK",
+    "ms": 7,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1002731262, \"user_id\": 3235667318, \"title\": \"\" }"
+  },
+  {
+    "name": "send_group_notice",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"send_group_notice\" 被标记为危险工具，已被拦截。如需使用，请在配置中启用 allowDangerous。"
+  },
+  {
+    "name": "set_group_whole_ban",
+    "status": "OK",
+    "ms": 290,
+    "text": "{ \"success\": true, \"adapter\": \"onebot\", \"group_id\": 1002731262, \"action\": \"关闭全群禁言\" }"
+  },
+  {
+    "name": "mute_member",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"mute_member\" 被标记为危险工具，已被拦截。如需使用，请在配置中启用 allowDangerous。"
+  },
+  {
+    "name": "set_group_name",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "工具 \"set_group_name\" 被标记为危险工具，已被拦截。如需使用，请在配置中启用 allowDangerous。"
+  }
+]

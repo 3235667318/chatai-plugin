@@ -1,0 +1,26 @@
+[
+  {
+    "name": "get_group_info",
+    "status": "OK",
+    "ms": 17,
+    "text": "{ \"success\": true, \"group_id\": 1002731262, \"group_name\": \"【主题】\", \"member_count\": 9, \"max_member_count\": 200, \"avatar_url\": \"https://p.qlogo.cn/gh/1002731262/1002731262/640\", \"bot_in_group\": true }"
+  },
+  {
+    "name": "check_in_group",
+    "status": "OK",
+    "ms": 5,
+    "text": "{ \"success\": true, \"group_id\": 1002731262, \"group_name\": \"【主题】\", \"is_in_group\": false, \"member_info\": null, \"avatar_url\": \"\" }"
+  },
+  {
+    "name": "get_group_member_list",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"group_id\": 1002731262, \"group_name\": \"【主题】\", \"total\": 9, \"returned\": 3, \"members\": [ { \"user_id\": 3889046681, \"nickname\": \"见夕\", \"card\": \"\", \"role\": \"admin\", \"title\": \"\" }, { \"user_id\": 2854199705, \"nickname\": \"蓝色肥肥"
+  },
+  {
+    "name": "get_current_group",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"group_name\": \"核桃的小窝\", \"member_count\": 78, \"max_member_count\": 500, \"avatar_url\": \"https://p.qlogo.cn/gh/1074031485/1074031485/640\" }"
+  }
+]

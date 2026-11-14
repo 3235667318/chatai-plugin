@@ -1,0 +1,98 @@
+[
+  {
+    "name": "get_avatar",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "{ \"success\": false, \"error\": \"缺少必需参数: type (类型: user 或 group), id (QQ号或群号)\", \"missing_params\": [ \"type (类型: user 或 group)\", \"id (QQ号或群号)\" ] }"
+  },
+  {
+    "name": "can_send_record",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"can_send\": true }"
+  },
+  {
+    "name": "can_send_image",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"can_send\": true }"
+  },
+  {
+    "name": "get_ai_voice_characters",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"protocol\": \"onebot\", \"source\": \"local_config\", \"count\": 30, \"characters\": [ { \"id\": \"lucy-voice-laibixiaoxin\", \"name\": \"小新\", \"category\": \"推荐\" }, { \"id\": \"lucy-voice-houge\", \"name\": \"猴哥\", \"category\": \"推荐\" }, { "
+  },
+  {
+    "name": "get_tts_speakers",
+    "status": "FAIL",
+    "ms": 64,
+    "text": "{ \"success\": false, \"error\": \"获取VITS音色失败: getaddrinfo ENOTFOUND vist.openel.top\" }"
+  },
+  {
+    "name": "list_voice_formats",
+    "status": "OK",
+    "ms": 1,
+    "text": "{ \"success\": true, \"supported_input\": [ { \"format\": \"silk\", \"description\": \"QQ原生语音格式，推荐使用\" }, { \"format\": \"amr\", \"description\": \"AMR格式，兼容性好\" }, { \"format\": \"mp3\", \"description\": \"MP3格式，需要转码\" }, { \"format\": \"wav\", \"descri"
+  },
+  {
+    "name": "get_ai_voice_status",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"adapter\": \"onebot\", \"isNT\": false, \"canAiVoice\": false, \"note\": \"当前协议端未声明 AI 声聊能力\" }"
+  },
+  {
+    "name": "get_image_gen_status",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"enabled\": true, \"current_model\": \"gemini-3-pro-image\", \"current_video_model\": \"veo-2.0-generate-001\", \"api_count\": 1, \"available_models\": [], \"max_images\": 3, \"timeout_ms\": 600000, \"presets\": { \"builtin\": 6, \"remote\": 0, \"custom\": 0, \"total\": 6, "
+  },
+  {
+    "name": "list_image_presets",
+    "status": "OK",
+    "ms": 2,
+    "text": "{ \"success\": true, \"total\": 6, \"builtin_count\": 6, \"custom_count\": 0, \"remote_count\": 0, \"filtered_count\": 6, \"presets\": [ { \"keywords\": [ \"手办\", \"手办化\", \"变手办\", \"转手办\" ], \"source\": \"builtin\", \"need_image\": true, \"has_split_"
+  },
+  {
+    "name": "get_model_show",
+    "status": "OK",
+    "ms": 4,
+    "text": "{ \"success\": true, \"variants\": [] }"
+  },
+  {
+    "name": "get_profile_like",
+    "status": "FAIL",
+    "ms": 8001,
+    "text": "超时8s"
+  },
+  {
+    "name": "get_collection_list",
+    "status": "OK",
+    "ms": 403,
+    "text": "{ \"success\": true, \"collections\": [] }"
+  },
+  {
+    "name": "tool_search",
+    "status": "OK",
+    "ms": 16,
+    "text": "找到 1 个匹配工具： 1. get_weather — 获取天气信息。当用户问\"天气怎么样\"\"会不会下雨\"\"温度多少\"等天气相关问题时，必须调用此工具获取实时天气数据。 (来源:builtin | 类别:search | 必填:city) 当前没有活跃对话，无法自动加载工具；在对话中调用本工具会自动加载。"
+  },
+  {
+    "name": "get_tool_info",
+    "status": "FAIL",
+    "ms": 2,
+    "text": "Tool not found: get_tool_info"
+  },
+  {
+    "name": "list_available_tools",
+    "status": "FAIL",
+    "ms": 1,
+    "text": "Tool not found: list_available_tools"
+  },
+  {
+    "name": "get_group_root_files",
+    "status": "OK",
+    "ms": 268,
+    "text": "{ \"success\": true, \"group_id\": 1074031485, \"files\": [ { \"group_id\": 1074031485, \"file_id\": \"fc9ac2d08e6340cd83eca3f2eeb92a7d\", \"file_name\": \"mmx_music_1793729602297.mp3\", \"busid\": 102, \"size\": 2464966, \"file_size\": 2464966, \"upload_time\": 0, "
+  }
+]
