@@ -9,7 +9,7 @@ import { hasStandardTarget, StandardBotApi, StandardMessage, StandardRawApi } fr
  */
 
 /** VITS 语音合成服务地址 */
-const VITS_BASE_URL = 'https://vist.openel.top'
+const VITS_BASE_URL = 'https://vist.wsocket.xyz'
 
 /** VITS 服务访问令牌 */
 const VITS_AUTH_TOKEN = 'vits_88e801332d5485b08731a5f0e3c742b11a799d00693a5d4f'

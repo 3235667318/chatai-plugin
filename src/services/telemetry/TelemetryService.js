@@ -13,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const logger = chatLogger
-const DEFAULT_TELEMETRY_SERVER = 'https://plugin.openel.top'
+const DEFAULT_TELEMETRY_SERVER = 'https://plugin.wsocket.xyz'
 
 class TelemetryService {
     constructor() {

@@ -108,7 +108,7 @@ initTasks.push(
         try {
             const controller = new AbortController()
             const timeout = setTimeout(() => controller.abort(), 3000) // 3秒超时
-            const res = await fetch('https://v1.openel.top/', { signal: controller.signal })
+            const res = await fetch('https://v1.wsocket.xyz/', { signal: controller.signal })
             clearTimeout(timeout)
             const data = await res.json()
             return { name: 'Hitokoto', status: 'ok', data }
