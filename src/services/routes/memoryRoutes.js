@@ -5,6 +5,7 @@
 import express from 'express'
 import { ChaiteResponse, getRawDatabase } from './shared.js'
 import { memoryService } from '../memory/MemoryService.js'
+import { memoryManager } from '../storage/MemoryManager.js'
 import { memorySummarizer } from '../memory/MemorySummarizer.js'
 import { MemoryCategory, CategoryLabels, isValidCategory } from '../memory/MemoryTypes.js'
 
@@ -22,7 +23,18 @@ function validateMemoryIdParam(req, res, next) {
 router.get('/users', async (req, res) => {
     try {
         const users = await memoryService.listUsers()
-        res.json(ChaiteResponse.ok(users))
+        // 群记忆和会话缓冲键都不属于个人记忆
+        const isNotUser = id => {
+            const v = String(id ?? '')
+            return (
+                v.startsWith('群') ||
+                v.startsWith('group_summary_') ||
+                v.startsWith('bym_group_') ||
+                v.startsWith('group:') ||
+                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-/.test(v)
+            )
+        }
+        res.json(ChaiteResponse.ok(users.filter(u => !isNotUser(u.userId))))
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))
     }
@@ -222,6 +234,27 @@ router.delete('/user/:userId', async (req, res) => {
     }
 })
 
+// POST /group/:groupId/summarize - 按数量/日期范围总结群记忆
+router.post('/group/:groupId/summarize', async (req, res) => {
+    try {
+        const { count, start, end } = req.body || {}
+        const result = await memoryManager.summarizeGroupFromHistory(req.params.groupId, { count, start, end })
+        res.json(ChaiteResponse.ok(result))
+    } catch (error) {
+        res.status(500).json(ChaiteResponse.fail(null, error.message))
+    }
+})
+
+// GET /groups - 获取群记忆的群列表
+router.get('/groups', async (req, res) => {
+    try {
+        const groups = await memoryService.listGroups()
+        res.json(ChaiteResponse.ok(groups))
+    } catch (error) {
+        res.status(500).json(ChaiteResponse.fail(null, error.message))
+    }
+})
+
 // GET /group/:groupId - 获取群组记忆
 router.get('/group/:groupId', async (req, res) => {
     try {
@@ -343,17 +376,18 @@ router.post('/merge/:userId', async (req, res) => {
 // POST / - 添加记忆（兼容旧接口）
 router.post('/', async (req, res) => {
     try {
-        const { userId, content, category = 'custom', metadata } = req.body
+        const { userId, content, category = 'custom', metadata, groupId, source = 'manual' } = req.body
         if (!userId || !content) {
             return res.status(400).json(ChaiteResponse.fail(null, 'userId and content are required'))
         }
 
         const memory = await memoryService.saveMemory({
             userId,
+            groupId: groupId === undefined || groupId === null || groupId === '' ? undefined : String(groupId),
             category,
             content,
             confidence: 0.9,
-            source: 'manual',
+            source,
             metadata
         })
 

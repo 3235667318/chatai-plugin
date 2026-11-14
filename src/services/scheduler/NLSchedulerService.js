@@ -203,7 +203,7 @@ class NLSchedulerService {
      * @returns {{ success: boolean, taskId?: string, executeAt?: number, error?: string }}
      */
     createTask(options) {
-        const { timeText, taskContent, groupId, creatorId, targetId, creatorName, targetName } = options
+        const { timeText, taskContent, groupId, creatorId, targetId, creatorName, targetName, targetGroupId } = options
 
         if (!timeText || !taskContent) {
             return { success: false, error: '请提供时间和任务内容' }
@@ -218,6 +218,13 @@ class NLSchedulerService {
             return { success: false, error: '无法解析时间，请使用如"5分钟后"、"明天早上8点"等格式' }
         }
 
+        // 模型经常只把群号写在内容里，这里兜底解析"在群12345678…"
+        let resolvedTargetGroupId = targetGroupId
+        if (!resolvedTargetGroupId) {
+            const m = String(taskContent).match(/(?:群|群号)[:：]?\s*(\d{5,12})/)
+            if (m) resolvedTargetGroupId = m[1]
+        }
+
         const taskId = this.generateTaskId()
         const now = Date.now()
 
@@ -227,6 +234,7 @@ class NLSchedulerService {
             creatorId: String(creatorId),
             creatorName: creatorName || '',
             targetId: targetId ? String(targetId) : null,
+            targetGroupId: resolvedTargetGroupId ? String(resolvedTargetGroupId) : null,
             targetName: targetName || '',
             content: taskContent,
             timeDescription: timeInfo.description,
@@ -237,6 +245,7 @@ class NLSchedulerService {
 
         this.tasks.set(taskId, task)
         this.saveTasks()
+        this._armTimer(task)
 
         logger.info(`[NLScheduler] 创建任务: ${taskId}, ${timeInfo.description}, 内容: ${taskContent.slice(0, 30)}`)
 
@@ -341,6 +350,7 @@ class NLSchedulerService {
         }
 
         const { groupId, creatorId, targetId, targetName, content } = task
+        const sendGroupId = String(task.targetGroupId || groupId)
 
         // 构建消息
         let message = []
@@ -362,7 +372,7 @@ class NLSchedulerService {
 
                 const result = await chatService.sendMessage({
                     userId: creatorId,
-                    groupId: groupId,
+                    groupId: sendGroupId,
                     message: prompt,
                     mode: 'chat'
                 })
@@ -376,20 +386,27 @@ class NLSchedulerService {
                 }
 
                 if (responseText) {
-                    message.push(responseText)
+                    // 目标已经在前面用 at 段 @ 过了，模型再写一遍 @名字(QQ) 会重复
+                    responseText = String(responseText)
+                        .replace(/@[^\s@]{0,40}@?\d{5,12}/g, '')
+                        .replace(/@\d{5,12}/g, '')
+                        .replace(/^(?:@[^\s@，。！？,、]+[\s:：]*)+/, '')
+                        .replace(/[ \t]{2,}/g, ' ')
+                        .trim()
+                    if (responseText) message.push(responseText)
                 } else {
-                    message.push(`⏰ 定时提醒：${content}`)
+                    message.push(`${content}`)
                 }
             } catch (err) {
                 logger.warn('[NLScheduler] AI处理失败，使用简单提醒:', err.message)
-                message.push(`⏰ 定时提醒：${content}`)
+                message.push(`${content}`)
             }
         } else {
             // 简单的文本提醒
-            message.push(`⏰ 时间到！${content}`)
+            message.push(`${content}`)
         }
 
-        await this.sendToGroup(bot, groupId, message)
+        await this.sendToGroup(bot, sendGroupId, message)
     }
 
     /**
@@ -487,8 +504,16 @@ class NLSchedulerService {
             const now = Date.now()
 
             for (const task of tasksData) {
-                // 跳过已过期的任务
-                if (task.executeAt <= now || task.executed) continue
+                if (task.executed) continue
+                if (task.executeAt <= now) {
+                    // 重启期间错过的任务：补执行一次，而不是永远跳过
+                    task.executeAt = now + 5000
+                    this.tasks.set(task.id, task)
+                    this._armTimer(task)
+                    logger.mark(`[NLScheduler] 补执行重启期间错过的任务: ${task.id}`)
+                    continue
+                }
+                this._armTimer(task)
                 this.tasks.set(task.id, task)
             }
 

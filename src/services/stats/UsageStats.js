@@ -347,12 +347,13 @@ class UsageStats {
         if (filter.source) {
             const sourceAliases = {
                 memory_group: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                memory_user: ['memory_user', '记忆总结', '用户记忆'],
+                memory_user: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
                 memory_extract: ['memory_extract', '记忆提取'],
                 群记忆: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
                 群记忆总结: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
                 用户记忆: ['memory_user', '记忆总结', '用户记忆'],
-                记忆总结: ['memory_user', '记忆总结', '用户记忆'],
+                记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
+                个人记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
                 记忆提取: ['memory_extract', '记忆提取']
             }
             const allowedSources = sourceAliases[filter.source] || [filter.source]

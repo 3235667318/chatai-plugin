@@ -209,4 +209,32 @@
         })
         .catch(function (_) { /* SW 不可用(如隐私模式)时静默降级 */ })
 })()
-</script></body></html>
+</script><script>(function(){
+function inject(){
+  if(document.querySelector('[data-chatai-group-memory]'))return true;
+  var links=[].slice.call(document.querySelectorAll('a'));
+  var src=links.filter(function(a){return /记忆/.test(a.textContent||'')&&/\/memory/.test(a.getAttribute('href')||'')})[0];
+  var base=location.pathname.replace(/\/memory\/?$/,'');
+  if(src){
+    var a=src.cloneNode(true);
+    a.setAttribute('href', base+'/group-memory/');
+    a.setAttribute('data-chatai-group-memory','1');
+    a.textContent='群记忆';
+    a.classList.remove('active');
+    src.parentNode.insertBefore(a, src.nextSibling);
+    return true;
+  }
+  if(!document.querySelector('[data-chatai-group-memory-fallback]')){
+    var b=document.createElement('a');
+    b.href=base+'/group-memory/';
+    b.textContent='群记忆';
+    b.setAttribute('data-chatai-group-memory-fallback','1');
+    b.style.cssText='position:fixed;right:18px;top:14px;z-index:9999;padding:6px 12px;border-radius:8px;background:#2563eb;color:#fff;font-size:13px;text-decoration:none;box-shadow:0 2px 8px rgba(0,0,0,.25)';
+    document.body.appendChild(b);
+    return true;
+  }
+  return false;
+}
+var n=0,t=setInterval(function(){if(inject()||++n>20)clearInterval(t)},300);
+})();</script>
+</body></html>

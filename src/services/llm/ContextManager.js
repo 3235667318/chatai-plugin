@@ -355,6 +355,28 @@ export class ContextManager {
      * @param {Object} options
      * @returns {Promise<boolean>}
      */
+    /** 把会话压缩总结写入该群的群记忆（覆盖上一条上下文总结） */
+    _saveContextSummaryToGroupMemory(conversationId, summaryText) {
+        const m = String(conversationId || '').match(/^group:(.+)$/)
+        if (!m) return
+        const gid = String(m[1])
+        const content = String(summaryText || '').replace(/\s+/g, ' ').trim().slice(0, 400)
+        if (!gid || !content) return
+        const db = databaseService.db
+        if (!db) return
+        const now = Date.now()
+        const del = db.prepare("DELETE FROM structured_memories WHERE group_id = ? AND source = 'context_summary'")
+        const ins = db.prepare(`
+            INSERT INTO structured_memories
+            (user_id, group_id, category, sub_type, content, confidence, source, metadata, created_at, updated_at, expires_at, is_active)
+            VALUES (?, ?, 'summary', 'general', ?, 0.7, 'context_summary', NULL, ?, ?, NULL, 1)
+        `)
+        db.transaction(() => {
+            del.run(gid)
+            ins.run(`群${gid}`, gid, content, now, now)
+        })()
+    }
+
     async summarizeConversation(conversationId, options = {}) {
         try {
             const history = await historyManager.getHistory(undefined, conversationId)
@@ -439,6 +461,13 @@ export class ContextManager {
             if (!summarySaved) {
                 logger.error(`[ContextManager] 总结未确认落库，已跳过历史裁剪以保护数据: ${conversationId}`)
                 return false
+            }
+
+            // 上下文总结同时进群记忆，方便在 Web 里查看/管理
+            try {
+                this._saveContextSummaryToGroupMemory(conversationId, summaryText)
+            } catch (err) {
+                logger.debug('[ContextManager] 上下文总结写入群记忆失败:', err.message)
             }
 
             // 只保留最新一条，即刚写入的总结

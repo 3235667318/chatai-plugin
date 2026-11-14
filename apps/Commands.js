@@ -150,6 +150,14 @@ export class AICommands extends plugin {
             priority: -100, // 最高优先级，确保命令不被其他插件抢占（数值越小优先级越高）
             rule: [
                 {
+                    reg: '^#?总结群记忆\\s*(\\d+)?$',
+                    fnc: 'summarizeGroupMemory'
+                },
+                {
+                    reg: '^#?拉取群历史\\s*(\\d+)?$',
+                    fnc: 'dumpGroupHistory'
+                },
+                {
                     reg: '^#工具模式(?:\\s+(ask|询问|auto|自动|confirm_all|全确认|yolo|直接执行))?$',
                     fnc: 'toolApprovalMode'
                 },
@@ -423,6 +431,91 @@ export class AICommands extends plugin {
         }
         return true
     }
+    /** #总结群记忆 [数量] */
+    async summarizeGroupMemory() {
+        if (!this.e.isGroup) return this.reply('仅群聊可用')
+        const m = String(this.e.msg || '').match(/(\d+)/)
+        const count = m ? parseInt(m[1]) : 300
+        await this.reply(`开始总结最近 ${count} 条聊天记录，请稍候…`)
+        try {
+            const result = await memoryManager.summarizeGroupFromHistory(this.e.group_id, { count })
+            return this.reply(
+                `总结完成：${result.messageCount} 条记录\n话题 ${result.topics.length} 条，关系 ${result.relations.length} 条\n${result.summary || ''}`
+            )
+        } catch (err) {
+            return this.reply(`总结失败：${err.message}`)
+        }
+    }
+
+    /** 拉取群历史，写入 data/history_<群号>.json */
+    async dumpGroupHistory() {
+        if (!this.e.isGroup) return this.reply('仅群聊可用')
+        const fs = await import('node:fs')
+        const m = String(this.e.msg || '').match(/(\d+)/)
+        const want = Math.min(2000, Math.max(1, parseInt(m ? m[1] : '600') || 600))
+        const gid = this.e.group_id
+
+        const collected = []
+        const seen = new Set()
+        let seq = null
+
+        for (let i = 0; i < 80 && collected.length < want; i++) {
+            let res
+            try {
+                res = await this.e.bot.sendApi('get_group_msg_history', {
+                    group_id: gid,
+                    count: want,
+                    ...(seq ? { message_seq: seq } : {})
+                })
+            } catch (err) {
+                return this.reply(`拉取失败：${err.message}`)
+            }
+            const msgs = res?.data?.messages || res?.messages || []
+            if (i === 0 && msgs.length) {
+                try {
+                    (await import('node:fs')).writeFileSync(
+                        'data/history_sample.json',
+                        JSON.stringify(msgs[0], null, 2),
+                        'utf-8'
+                    )
+                } catch {}
+            }
+            if (!msgs.length) break
+            let added = 0
+            for (const msg of msgs) {
+                const id = String(msg.message_id ?? msg.message_seq ?? '')
+                if (id && seen.has(id)) continue
+                if (id) seen.add(id)
+                collected.push(msg)
+                added++
+            }
+            if (!added) break
+            const oldest = msgs[msgs.length - 1]
+            // NapCat 的 message_seq 参数实际用的是 real_seq
+            seq = oldest?.message_seq ?? oldest?.real_seq ?? oldest?.message_id ?? null
+            if (!seq) break
+        }
+
+        const slim = collected.slice(-want).map(msg => {
+            const sender = msg.sender || {}
+            const text = Array.isArray(msg.message)
+                ? msg.message
+                      .filter(s => s.type === 'text')
+                      .map(s => s.data?.text || '')
+                      .join('')
+                : String(msg.raw_message || msg.message || '')
+            return {
+                time: Number(msg.time || 0),
+                user_id: String(msg.user_id ?? sender.user_id ?? ''),
+                nickname: sender.card || sender.nickname || String(msg.user_id ?? ''),
+                text: text.replace(/\s+/g, ' ').trim()
+            }
+        })
+
+        fs.writeFileSync(`data/history_${gid}.json`, JSON.stringify(slim, null, 2), 'utf-8')
+        return this.reply(`已拉取 ${slim.length} 条历史`)
+    }
+
     async clearMemory() {
         const e = this.e
         try {
@@ -1937,11 +2030,19 @@ ${rawChatHistory}`
             const cost = tokenCost + toolCost
             const cachePct = input > 0 ? Math.round((cache / input) * 100) : 0
 
+            const nowPeak = isPeakHour(Date.now())
+            // 每 4 位加逗号分隔（从右往左分组）
+            const fmtTok = n => String(Number(n) || 0).replace(/\B(?=(\d{4})+(?!\d))/g, ',')
             const lines = [
-                '今日用量～',
-                `调用 ${calls} 次，输入 ${input} token（缓存命中 ${cache}，${cachePct}%），输出 ${output}`,
-                `搜索 ${searches} 次`,
-                `估算花费：约 ¥${cost.toFixed(2)}（按峰谷价）`
+                '😡今日用量😡',
+                `调用次数：${calls}次`,
+                `未命中缓存：${fmtTok(missTok)}`,
+                `命中缓存：${fmtTok(cache)}（${cachePct}%）`,
+                `总输入：${fmtTok(input)}`,
+                `输出：${fmtTok(output)}`,
+                `搜索：${searches}次`,
+                `预估花费：${cost.toFixed(2)}（按谷峰价）`,
+                `当前时段：${nowPeak ? '梁文峰' : '梁文谷'}`
             ]
             await this.reply(lines.join('\n'), true)
             return true

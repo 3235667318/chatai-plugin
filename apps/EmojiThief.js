@@ -141,6 +141,32 @@ class EmojiThiefService {
         await fsp.mkdir(emojiDir, { recursive: true }).catch(() => {})
 
         const md5Db = await this.readMd5Db(dbPath)
+
+        // 一致性修复：文件被删/迁移后，md5 里仍登记着哈希，会导致永远跳过重复下载。
+        // 这里清掉“文件不存在”的内容哈希，并丢弃旧的 url: 记录，允许重新收集。
+        try {
+            const files = await fsp.readdir(emojiDir).catch(() => [])
+            const bases = new Set(
+                files.filter(f => !f.endsWith('.json')).map(f => f.split('.')[0])
+            )
+            let pruned = 0
+            for (const h of [...md5Db]) {
+                if (h.startsWith('url:')) {
+                    md5Db.delete(h)
+                    pruned++
+                    continue
+                }
+                if (!bases.has(h)) {
+                    md5Db.delete(h)
+                    pruned++
+                }
+            }
+            if (pruned > 0) {
+                await this.writeMd5Db(dbPath, md5Db)
+                logger.debug(`[EmojiThief] 清理失效哈希 ${pruned} 条，可重新收集`)
+            }
+        } catch {}
+
         let hasNewEmoji = false
         let collectedCount = 0
 

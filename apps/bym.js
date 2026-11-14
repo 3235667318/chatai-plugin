@@ -16,6 +16,18 @@ import {
     sendSegmentedMessage
 } from '../src/utils/messageSegment.js'
 
+/** 群聊背景里要丢掉的刷屏内容：游戏进度、指令、数值类 */
+const BYM_CONTEXT_NOISE_RE =
+    /(第?\s*\d+\s*层|\d+\s*号箱|开箱|签到|抽奖|修为|境界|灵石|妖兽|秘境|功法|渡劫|背包|战力|副本|历练|宗门|掌门|弟子|好感度|饱食|水质|大肥鱼|钓鱼|挂机|答题|清理野怪)/i
+
+function isBymContextNoise(content) {
+    const text = String(content || '').trim()
+    if (!text) return true
+    if (/^[#＃]/.test(text)) return true
+    if (/^(清理|挑战|签到|抽奖|购买|出售|使用|突破|修炼|挂机|答题)/.test(text)) return true
+    return BYM_CONTEXT_NOISE_RE.test(text)
+}
+
 async function getBymGroupContextMessages(e, groupId, limit = 15) {
     const api = StandardBotApi.fromContext({ event: e, bot: e?.bot || globalThis.Bot })
     if (api.isQQBot) {
@@ -510,13 +522,13 @@ export class bym extends plugin {
             const fullUserId = bymGroupId ? `bym_group_${bymGroupId}` : bymUserId
             if (bymGroupId) {
                 try {
-                    const contextMessages = await getBymGroupContextMessages(e, bymGroupId, 8)
+                    const contextMessages = await getBymGroupContextMessages(e, bymGroupId, 20)
 
                     if (contextMessages.length > 0) {
-                        const contextText = contextMessages
+                        const entries = contextMessages
                             .map(m => {
                                 const name = m.nickname || m.userId || '用户'
-                                const content =
+                                const raw =
                                     typeof m.content === 'string'
                                         ? m.content
                                         : Array.isArray(m.content)
@@ -525,10 +537,15 @@ export class bym extends plugin {
                                                 .map(c => c.text)
                                                 .join('')
                                           : ''
-                                return `[${name}]: ${content}`
+                                const content = String(raw || '').replace(/\s+/g, ' ').trim()
+                                if (!content || isBymContextNoise(content)) return ''
+                                const shown = content.length > 60 ? content.slice(0, 60) + '…' : content
+                                return `[${name}]: ${shown}`
                             })
-                            .join('\n')
+                            .filter(Boolean)
+                            .slice(-8)
 
+                        const contextText = entries.join('\n')
                         if (contextText.trim()) {
                             // 放到 user 消息里而不是 system：system 每轮都变会整段掉缓存
                             bymGroupContextText = `
@@ -537,7 +554,7 @@ export class bym extends plugin {
 ${contextText}
 
 【背景结束。当前发言见下面的用户消息；背景里出现的名字/称呼指的是别人，不要当成在叫你。】`
-                            logger.debug(`[BYM] 已添加群聊上下文: ${contextMessages.length} 条消息`)
+                            logger.debug(`[BYM] 已添加群聊上下文: ${entries.length} 条消息`)
                         }
                     }
                 } catch (err) {
@@ -564,6 +581,7 @@ ${contextText}
                         ? imageUrls.slice(0, 3).map(url => ({ type: 'image_url', image_url: { url } }))
                         : [],
                 mode: 'bym', // 标记为伪人模式
+                source: 'bym', // 统计来源标记为伪人
                 model: bymModel,
                 prefixPersona: systemPrompt, // 使用伪人系统提示
                 event: e,
