@@ -1,4 +1,6 @@
 import express from 'express'
+import path from 'node:path'
+import { createChannelDisplayOrderRoutes } from './channelDisplayOrderRoutes.js'
 import { channelManager, normalizeBaseUrl } from '../llm/ChannelManager.js'
 import { delegateRequest } from '../llm/LlmDelegator.js'
 import { statsService } from '../stats/StatsService.js'
@@ -70,6 +72,23 @@ router.post('/', async (req, res) => {
         res.status(500).json(ApiResponse.fail(null, error.message))
     }
 })
+
+// Static display-order routes must precede /:id and retain the parent auth guard.
+router.use(
+    '/display-order',
+    createChannelDisplayOrderRoutes({
+        getFilePath: () => {
+            if (typeof config.dataDir !== 'string' || !path.isAbsolute(config.dataDir)) {
+                throw new Error('Channel display order data directory is not initialized or absolute')
+            }
+            return path.join(config.dataDir, 'channel-display-order.json')
+        },
+        getChannelIds: async () => {
+            await channelManager.init()
+            return channelManager.getAll().map(channel => channel.id)
+        }
+    })
+)
 
 // PUT /api/channels/:id
 router.put('/:id', async (req, res) => {
@@ -143,32 +162,37 @@ router.post('/test', async (req, res) => {
     let channelName = id || '临时测试'
 
     try {
+        // channelManager 未初始化时 get() 恒返回 null，带 id 的测试会被误判成渠道不存在，故与其他路由一致先 init
+        await channelManager.init()
         // 准备阶段同样置于 try 内：handler 是 async 函数，此处的同步抛错会变成 unhandledRejection 而非 500 响应
         if (id) {
             const channel = channelManager.get(id)
-            if (channel) {
-                channelName = channel.name || id
-                adapterType = channel.adapterType
-                baseUrl = channel.baseUrl
-                chatPath = channel.chatPath // 获取渠道的自定义对话路径
-                responsePath = channel.responsePath || channel.endpoints?.responses || ''
-                endpoints = channel.endpoints || {}
-                apiInterface = channel.apiInterface || channel.openaiApiInterface || 'chat'
-                openaiApiInterface = apiInterface
-                experimental = channel.experimental || {}
-                openaiResponses = channel.openaiResponses || {}
-                models = channel.models
-                advanced = channel.advanced || advanced
+            // 渠道不存在必须显式失败：原实现回落到空对象后交给 lockChannel 委托，
+            // 会白跑满整个重试预算才抛出"渠道 undefined 客户端构造失败"这类误导性错误
+            if (!channel) {
+                return res.status(404).json(ApiResponse.fail(null, 'Channel not found'))
+            }
+            channelName = channel.name || id
+            adapterType = channel.adapterType
+            baseUrl = channel.baseUrl
+            chatPath = channel.chatPath // 获取渠道的自定义对话路径
+            responsePath = channel.responsePath || channel.endpoints?.responses || ''
+            endpoints = channel.endpoints || {}
+            apiInterface = channel.apiInterface || channel.openaiApiInterface || 'chat'
+            openaiApiInterface = apiInterface
+            experimental = channel.experimental || {}
+            openaiResponses = channel.openaiResponses || {}
+            models = channel.models
+            advanced = channel.advanced || advanced
 
-                if (channel.apiKeys && channel.apiKeys.length > 0) {
-                    const keyInfo = channelManager.getChannelKey(channel, { recordUsage: false })
-                    apiKey = keyInfo.key
-                    usedKeyIndex = keyInfo.keyIndex
-                    usedKeyName = keyInfo.keyName
-                    usedStrategy = keyInfo.strategy
-                } else {
-                    apiKey = channel.apiKey
-                }
+            if (channel.apiKeys && channel.apiKeys.length > 0) {
+                const keyInfo = channelManager.getChannelKey(channel, { recordUsage: false })
+                apiKey = keyInfo.key
+                usedKeyIndex = keyInfo.keyIndex
+                usedKeyName = keyInfo.keyName
+                usedStrategy = keyInfo.strategy
+            } else {
+                apiKey = channel.apiKey
             }
         } else if (apiKeys && apiKeys.length > 0) {
             usedStrategy = strategy || 'round-robin'
@@ -202,7 +226,26 @@ router.post('/test', async (req, res) => {
             }
         }
 
-        const channel = id ? channelManager.get(id) || {} : {}
+        // 带 id 时上面的 404 早退已保证 get 非 null，这里无需再兜空对象
+        const channel = id ? channelManager.get(id) : {}
+        const testChannel = id
+            ? channel
+            : {
+                  id: `${adapterType || 'openai'}-temp-test`,
+                  name: channelName,
+                  adapterType,
+                  baseUrl,
+                  apiKey,
+                  models: models || [],
+                  advanced,
+                  chatPath,
+                  responsePath,
+                  endpoints: endpoints || {},
+                  apiInterface,
+                  openaiApiInterface,
+                  experimental: experimental || {},
+                  openaiResponses: openaiResponses || {}
+              }
 
         /*
          * 渠道未配置 models 时的健康检查兜底模型。
@@ -261,7 +304,7 @@ router.post('/test', async (req, res) => {
         const delegated = await delegateRequest({
             userMessage: { role: 'user', content: [{ type: 'text', text: testMessage }] },
             initialModel: actualTestModel,
-            initialChannel: id ? channel : null,
+            initialChannel: testChannel,
             clientBaseOptions: {},
             requestOptions: options,
             event: null,
@@ -467,16 +510,12 @@ async function runBatchTest(req, res) {
 
     const testSingleModel = async model => {
         const startTime = Date.now()
+        let keyInfo = null
         try {
             let apiKey = channel.apiKey
-            let keyInfo = null
             if (channel.apiKeys && channel.apiKeys.length > 0) {
                 keyInfo = channelManager.getChannelKey(channel, { recordUsage: false })
                 apiKey = keyInfo.key
-                // 认证 Key 已由 getChannelKey 准备：如实记录供失败响应使用
-                usedKeyIndex = keyInfo.keyIndex
-                usedKeyName = keyInfo.keyName
-                usedStrategy = keyInfo.strategy
             }
 
             // 应用模型映射/重定向
@@ -531,14 +570,16 @@ async function runBatchTest(req, res) {
                 success: true,
                 elapsed,
                 response: replyText.substring(0, 100),
-                keyInfo: keyInfo ? { name: keyInfo.keyName, index: keyInfo.keyIndex } : null
+                keyInfo: keyInfo ? { name: keyInfo.keyName, index: keyInfo.keyIndex, strategy: keyInfo.strategy } : null
             }
         } catch (error) {
             return {
                 model,
                 success: false,
                 elapsed: Date.now() - startTime,
-                error: error.message
+                error: error.message,
+                // 失败时同样回传命中的 Key：面板需要展示"是哪个 Key 失败"，仅报模型名无法定位多 Key 渠道
+                keyInfo: keyInfo ? { name: keyInfo.keyName, index: keyInfo.keyIndex, strategy: keyInfo.strategy } : null
             }
         }
     }
@@ -578,6 +619,8 @@ router.post('/test-model', async (req, res) => {
     const startTime = Date.now()
     // channelId / model 必须定义在 try 之外：下方 catch 块会引用 model 拼装失败响应
     const { channelId, model } = req.body || {}
+    // keyInfo 同理：catch 需要回传命中的 Key，声明在 try 内会让 catch 引用不到
+    let keyInfo = null
     try {
         if (!channelId || !model) {
             return res.status(400).json(ApiResponse.fail(null, 'channelId and model are required'))
@@ -591,14 +634,9 @@ router.post('/test-model', async (req, res) => {
         }
 
         let apiKey = channel.apiKey
-        let keyInfo = null
         if (channel.apiKeys && channel.apiKeys.length > 0) {
             keyInfo = channelManager.getChannelKey(channel, { recordUsage: false })
             apiKey = keyInfo.key
-            // 认证 Key 已由 getChannelKey 准备：如实记录供失败响应使用
-            usedKeyIndex = keyInfo.keyIndex
-            usedKeyName = keyInfo.keyName
-            usedStrategy = keyInfo.strategy
         }
 
         // 应用模型映射/重定向
@@ -657,17 +695,29 @@ router.post('/test-model', async (req, res) => {
                 success: true,
                 elapsed,
                 response: replyText.substring(0, 100),
-                keyInfo: keyInfo ? { name: keyInfo.keyName, index: keyInfo.keyIndex } : null
+                keyInfo: keyInfo ? { name: keyInfo.keyName, index: keyInfo.keyIndex, strategy: keyInfo.strategy } : null
             })
         )
     } catch (error) {
+        /*
+         * 失败必须走 ApiResponse.fail（code !== 0）：前端 axios 响应拦截器只在该条件下抛错，
+         * 原先用 ok 包住 success:false 会让网络层表现为"请求成功"，失败原因只剩一条易被忽略的 toast。
+         * error 字段与 data 形状保留，兼容旧调用方对 data.success / data.error 的读取。
+         */
+        chatLogger.error('[单模型测试] 错误:', error.message)
         res.json(
-            ApiResponse.ok({
-                model,
-                success: false,
-                elapsed: Date.now() - startTime,
-                error: error.message
-            })
+            ApiResponse.fail(
+                {
+                    model,
+                    success: false,
+                    elapsed: Date.now() - startTime,
+                    error: error.message,
+                    keyInfo: keyInfo
+                        ? { name: keyInfo.keyName, index: keyInfo.keyIndex, strategy: keyInfo.strategy }
+                        : null
+                },
+                `测试失败: ${error.message}`
+            )
         )
     }
 })

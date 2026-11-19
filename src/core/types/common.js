@@ -25,7 +25,9 @@ export const MultipleKeyStrategyChoice = {
  * 由 ChannelManager 归一化写入，结构为毫秒数值
  * @typedef {Object} ChannelTimeout
  * @property {number} [connect] - 连接超时(ms)
- * @property {number} [read] - 读取超时(ms)，即整体请求超时
+ * @property {number} [read] - 读取超时(ms)，即期望的整体请求超时
+ * @property {number} [maxTimeout] - 最大超时(ms)，单次请求的硬上限，0 或未配置表示不限制。
+ *                                   生效值为 min(read, maxTimeout)，超时即判失败并由 LlmDelegator 继续重试
  */
 
 export class BaseClientOptions {
@@ -77,6 +79,28 @@ export class BaseClientOptions {
             if (options.toolCallLimitConfig) this.toolCallLimitConfig = options.toolCallLimitConfig
             if (options.onMessageWithToolCall) this.onMessageWithToolCall = options.onMessageWithToolCall
             if (options.toolChoice !== undefined && options.toolChoice !== null) this.toolChoice = options.toolChoice
+            /**
+             * 工具延迟加载状态。存在时表示当前请求只暴露了核心工具 + tool_search，
+             * tool_search 命中后会把完整工具动态注入 client.tools。
+             * 结构：{ candidates: Array, loaded: Set<string>, maxResults: number, autoLoad: boolean }
+             * @type {{ candidates: Array<Record<string, any>>, loaded: Set<string>, maxResults: number, autoLoad: boolean } | undefined}
+             */
+            if (options.toolSearchState) this.toolSearchState = options.toolSearchState
+            /**
+             * 官方 hosted search 配置。由 NativeSearchService.resolveHostedSearch 解析，
+             * 适配器据此在请求体中附加官方搜索工具；undefined 表示不附加。
+             * @type {{ enabled: boolean, provider: string, tool?: Record<string, any>, maxUses?: number, replaceTools?: boolean, reason?: string } | undefined}
+             */
+            if (options.nativeSearch) this.nativeSearch = options.nativeSearch
+            /**
+             * 官方搜索策略：
+             * - `auto`（默认）官方优先，失败回退免费引擎；
+             * - `force` 用户/渠道显式指定官方后端，失败直接报错，不降级第三方；
+             * - `off`  完全不使用官方搜索，只用免费引擎。
+             * 内置 web_search 通过 client.options.nativeSearchPolicy 读取该值。
+             * @type {'auto'|'force'|'off'|undefined}
+             */
+            if (options.nativeSearchPolicy) this.nativeSearchPolicy = options.nativeSearchPolicy
 
             /* 推理 / 深度思考（供 OpenAI 兼容适配器与单次请求合并） */
             if (options.enableReasoning !== undefined) this.enableReasoning = options.enableReasoning

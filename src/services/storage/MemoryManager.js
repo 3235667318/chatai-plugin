@@ -13,6 +13,7 @@ import { delegateRequest } from '../llm/LlmDelegator.js'
 import { statsService } from '../stats/StatsService.js'
 import { resolveClientTemperature } from '../llm/TemperatureResolver.js'
 import { formatUserMemoryBlock } from '../memory/MemoryService.js'
+import { memoryLlmScheduler } from '../memory/MemoryLlmScheduler.js'
 
 /** 时间戳 Map 的条目上限 */
 const TIME_MAP_MAX_SIZE = 5000
@@ -38,24 +39,7 @@ const POLL_KV_PREFIX = 'memory:poll:last:'
  * @param {string} [options.analysisTypes] - 分析维度描述，缺省为“用户特征、话题、关系”
  * @returns {string} 完整提示词
  */
-/**
- * 构建群聊记忆的 system / user 两段提示词。
- *
- * system 只放固定指令与输出格式，跨群、跨轮次完全一致，便于命中上下文缓存；
- * user 放本次的记录范围、分析维度、条数上限、现有记忆与群聊记录。
- *
- * 输出格式与 analyzeGroupContext / summarizeGroupMemoryByTimeRange 中的
- * 【用户:昵称】【话题】【关系】解析正则严格耦合，禁止改动括号与标签文字。
- *
- * @param {Object} options - 构建选项
- * @param {string} options.dialogText - 群聊记录文本，每行形如 `[昵称]: 内容`
- * @param {string} options.existingMemoryText - 现有记忆文本，无则传空串
- * @param {number} options.maxItems - 输出条数上限
- * @param {string} [options.scopeHint] - 记录范围描述，如“过去30分钟内的120条消息”
- * @param {string} [options.analysisTypes] - 分析维度描述，缺省为“用户特征、话题、关系”
- * @returns {{system: string, user: string}} 两段提示词
- */
-function buildGroupMemoryPrompts(options = {}) {
+function buildGroupMemoryPrompt(options = {}) {
     const {
         dialogText,
         existingMemoryText,
@@ -64,68 +48,37 @@ function buildGroupMemoryPrompts(options = {}) {
         analysisTypes = '用户特征、话题、关系'
     } = options
 
-    const system = `你是群聊记忆管理专家。分析用户消息中给出的【群聊记录】，提取值得长期保留的信息。
+    return `你是群聊记忆管理专家。分析${scopeHint}，提取值得长期保留的信息。
 
 【重要规则】
-- 每条消息格式为 [昵称(QQ号)]: 内容，方括号里是该用户的群名片和 QQ
+- 每条消息格式为 [昵称]: 内容，方括号里的昵称就是该用户的群名片
 - 只记录用户自己说出口的具体信息，不要从语气、话题或他人发言推测
-- 按 昵称(QQ号) 区分用户，同名不同 QQ 视为两个人
+- 按昵称区分用户，不要把不同人的信息混到一起
 - 忽略无实质内容的日常对话（如“哈哈”“好的”“在吗”）
-- 不记录：游戏进度/数值/装备/关卡、指令用法、余额/用量统计、文件分享、抽奖签到、刷屏内容
-- 只记录群层面的长期信息：群规则、固定活动、长期项目、约定、群梗和黑话、成员关系
-- 【话题】必须是能长期复用的主题（例如“每周五晚群内开黑”），不能是某一次游戏战况
-- 称谓/辈分必须逐字来自对话原话：师祖 ≠ 师姐 ≠ 师尊，不得替换、推测或按印象改写
-- 每条关系必须写清“谁对谁”，例如“A叫B‘师祖’”；不确定是谁说的就不记
-- 没有任何长期信息时，只输出一个“无”，不要硬凑
 
-【总结要求】
-1. 把用户消息里的【现有记忆】与新记录合并成一份完整记忆，删除重复、过时或已被推翻的条目
-2. 用户信息必须写明是谁，例如“小明喜欢打游戏”，不能写“有人喜欢打游戏”
-3. 话题必须是具体主题，例如“讨论原神3.0版本”，不能写“聊游戏”
-4. 关系必须写明双方，例如“小明和小红是好友”；称呼类关系必须写清方向，例如“虚心叫清华得不到的学生‘糖糖姐姐’”，不要写反
-5. 不要输出分析过程、小标题或编号，只输出结果行
-
-【输出格式（严格 JSON）】
-只输出一个 JSON 对象，不要 markdown 代码块、不要解释、不要多余文字：
-{"memories":[{"type":"user","name":"群名片(QQ号)","content":"该用户的具体信息"},{"type":"topic","content":"长期话题"},{"type":"relation","content":"A和B：关系描述"}]}
-条数上限以用户消息中的【条数上限】为准；没有任何值得记录的信息时输出：{"memories":[]}`
-
-    const user = `【记录范围】${scopeHint}
 【分析维度】${analysisTypes}
-【条数上限】${maxItems}
+
 【现有记忆】
 ${existingMemoryText || '暂无'}
+
 【群聊记录】
-${dialogText}`
+${dialogText}
 
-    return { system, user }
+【总结要求】
+1. 把现有记忆与新记录合并成一份完整记忆，删除重复、过时或已被推翻的条目
+2. 用户信息必须写明是谁，例如“小明喜欢打游戏”，不能写“有人喜欢打游戏”
+3. 话题必须是具体主题，例如“讨论原神3.0版本”，不能写“聊游戏”
+4. 关系必须写明双方，例如“小明和小红是好友”
+5. 不要输出分析过程、小标题或编号，只输出结果行
+
+【输出格式】
+每行一条，必须严格使用下面三种前缀之一，前缀外不加任何字符：
+【用户:昵称】该用户的具体信息
+【话题】具体话题内容
+【关系】A和B：关系描述
+
+最多${maxItems}条。没有任何值得记录的信息时，只输出一个字：无`
 }
-
-/**
- * 兼容旧调用：把 system / user 拼成单条字符串。
- * 新链路请直接用 buildGroupMemoryPrompts，让固定指令走 system 以命中缓存。
- */
-/** 临时/游戏进度类记忆特征：只保留长期稳定信息 */
-const TRANSIENT_MEMORY_RE =
-    /(提到|要求|在群内|进度|选择|境界|锁妖|开箱|箱子|第\s*\d+\s*层|\d+\s*号箱|挂机|挂自动|自动出招|答题|上香|重启|好感|饱食|水质|配饰|血量|蓝量|战力|签到|抽卡|刷到|打了|开了|败了|搞不起)/
-
-/** 内容里写了别人的 QQ（与本用户不一致）时丢弃，避免记错人 */
-function mentionsOtherQQ(content, userId) {
-    const m = String(content || '').match(/QQ(?:号|为|是)?\s*[:：]?\s*(\d{5,12})/)
-    if (!m) return false
-    const clean = String(userId || '').replace(/\.0+$/, '')
-    return m[1] !== clean
-}
-
-function isTransientMemory(content) {
-    return TRANSIENT_MEMORY_RE.test(String(content || ''))
-}
-
-function buildGroupMemoryPrompt(options = {}) {
-    const { system, user } = buildGroupMemoryPrompts(options)
-    return `${system}\n\n${user}`
-}
-
 
 /**
  * @class MemoryManager
@@ -146,6 +99,8 @@ export class MemoryManager {
     constructor() {
         this.initialized = false
         this.pollInterval = null
+        /** @type {boolean} 轮询重入守卫：上一轮未结束时跳过本轮 */
+        this._pollRunning = false
         this.lastPollTime = new Map() // userId -> timestamp
         this.lastSummarizeTime = new Map() // groupId/userId -> timestamp 记录上次总结时间
     }
@@ -213,7 +168,11 @@ export class MemoryManager {
     startPolling() {
         if (!config.get('memory.enabled')) return
 
-        const intervalMinutes = config.get('memory.pollInterval') || 5
+        // 定时器间隔不小于 minPollInterval：config.yaml 可能残留较旧的 pollInterval（如 5 分钟），
+        // 逐目标频率由 minPollInterval 把守，定时器没必要更密集，只会空转并放大触发频率。
+        const configuredIntervalMinutes = config.get('memory.pollInterval') || 5
+        const minPollIntervalMinutes = config.get('memory.minPollInterval') || 180
+        const intervalMinutes = Math.max(configuredIntervalMinutes, minPollIntervalMinutes)
         const intervalMs = intervalMinutes * 60 * 1000
 
         // 清除旧的定时器
@@ -316,8 +275,6 @@ export class MemoryManager {
         }
 
         // 同时持久化到数据库（用于群聊总结的保底数据）
-        // groupContext 关闭后不再落库，避免无人使用的 group_summary_* 白占磁盘
-        if (config.get('memory.groupContext.enabled') === false) return
         try {
             databaseService.init()
             const conversationId = `group_summary_${groupId}`
@@ -348,13 +305,7 @@ export class MemoryManager {
 
         try {
             // 构建对话文本
-            const dialogText = messages
-             .map(m => {
-                 const qq = String(m.userId ?? m.user_id ?? m.sender?.user_id ?? '')
-                 const name = m.nickname || m.sender?.card || m.sender?.nickname || qq || '未知'
-                 return `[${name}${qq ? `(${qq})` : ''}]: ${String(m.content || '').substring(0, 100)}`
-             })
-             .join('\n')
+            const dialogText = messages.map(m => `[${m.nickname}]: ${m.content.substring(0, 100)}`).join('\n')
 
             if (dialogText.length < 100) return
             const existingTopics = databaseService.getMemories(`group:${groupId}:topics`, 20)
@@ -373,8 +324,8 @@ export class MemoryManager {
             if (groupConfig.extractTopics) analysisTypes.push('讨论话题')
             if (groupConfig.extractRelations) analysisTypes.push('社交关系')
 
-            // 覆盖式总结提示词：固定指令走 system 命中缓存，数据走 user
-            const { system: groupMemorySystem, user: groupMemoryUser } = buildGroupMemoryPrompts({
+            // 覆盖式总结prompt，与 summarizeGroupMemoryByTimeRange 共用同一份模板
+            const prompt = buildGroupMemoryPrompt({
                 dialogText,
                 existingMemoryText,
                 maxItems: 15,
@@ -389,15 +340,15 @@ export class MemoryManager {
             const _temp = resolveClientTemperature(client, 0.3)
             const result = await this._sendMemoryLlm(
                 client,
-                { role: 'user', content: [{ type: 'text', text: groupMemoryUser }] },
+                { role: 'user', content: [{ type: 'text', text: prompt }] },
                 {
                     model,
                     maxToken: 600,
                     disableHistorySave: true,
-                    systemOverride: groupMemorySystem,
                     ...(_temp !== undefined ? { temperature: _temp } : {})
                 },
-                'MemoryGroupContext'
+                'MemoryGroupContext',
+                `group:${groupId}`
             )
 
             const responseText = result.contents?.[0]?.text?.trim() || ''
@@ -415,13 +366,7 @@ export class MemoryManager {
                     groupId,
                     responseText,
                     apiUsage: result.usage,
-                    request: {
-                        messages: [
-                            { role: 'system', content: groupMemorySystem },
-                            { role: 'user', content: groupMemoryUser }
-                        ],
-                        model
-                    },
+                    request: { messages: [{ role: 'user', content: prompt }], model },
                     response: !recordSuccess ? { error: '响应为空' } : null
                 })
             } catch (e) {
@@ -431,8 +376,7 @@ export class MemoryManager {
             if (!responseText || responseText === '无' || responseText.length < 10) return
 
             // 解析并覆盖保存记忆
-            const jsonLines = this._jsonToMemoryLines(responseText)
-            const lines = jsonLines || responseText.split('\n').filter(line => line.trim())
+            const lines = responseText.split('\n').filter(line => line.trim())
 
             // 收集新记忆
             const newTopics = []
@@ -443,10 +387,9 @@ export class MemoryManager {
                 // 过滤无效行
                 if (this._isInvalidMemoryLine(line)) continue
 
-                // 提取用户记忆（extractUserInfo 关闭时不保存）
+                // 提取用户记忆
                 const userMatch = line.match(/【用户[:：](.+?)】(.+)/)
                 if (userMatch) {
-                    if (!groupConfig.extractUserInfo) continue
                     const nickname = userMatch[1].trim()
                     const info = userMatch[2].trim()
                     if (info.length > 3 && info.length < 100) {
@@ -458,24 +401,22 @@ export class MemoryManager {
                     continue
                 }
 
-                // 提取话题记忆（extractTopics 关闭时不保存，并过滤游戏/刷屏类话题）
+                // 提取话题记忆
                 const topicMatch = line.match(/【话题】(.+)/)
                 if (topicMatch) {
-                    if (!groupConfig.extractTopics) continue
                     const topic = topicMatch[1].trim()
-                    if (topic.length > 3 && topic.length < 100 && !isTransientMemory(topic)) {
-                        if (!this._isJunkMemoryLine(topic)) newTopics.push(topic)
+                    if (topic.length > 3 && topic.length < 100) {
+                        newTopics.push(topic)
                     }
                     continue
                 }
 
-                // 提取关系记忆（extractRelations 关闭时不保存）
+                // 提取关系记忆
                 const relationMatch = line.match(/【关系】(.+)/)
                 if (relationMatch) {
-                    if (!groupConfig.extractRelations) continue
                     const relation = relationMatch[1].trim()
                     if (relation.length > 3 && relation.length < 100) {
-                        if (!this._isJunkMemoryLine(relation)) newRelations.push(relation)
+                        newRelations.push(relation)
                     }
                 }
             }
@@ -505,12 +446,6 @@ export class MemoryManager {
                 }
             }
 
-            try {
-                this._syncGroupMemoriesToStructured(groupId, newTopics, newRelations)
-            } catch (err) {
-                logger.debug('[MemoryManager] 同步群记忆到结构化失败:', err.message)
-            }
-
             logger.debug(
                 `[MemoryManager] 群 ${groupId} 覆盖式总结完成: 话题${newTopics.length} 关系${newRelations.length} 用户${newUserInfos.size}`
             )
@@ -538,386 +473,6 @@ export class MemoryManager {
      * @param {string} line
      * @returns {boolean}
      */
-    /** 把群话题/关系同步到 structured_memories（group_id 维度，user_id 固定为 group） */
-    /** 按聊天记录数量/日期范围手动总结群记忆 */
-    async summarizeGroupFromHistory(groupId, options = {}) {
-        const gid = String(groupId || '').trim()
-        if (!gid) throw new Error('缺少群号')
-        const count = Math.min(2000, Math.max(10, parseInt(options.count, 10) || 300))
-        let bot = null
-        try {
-            const BotObj = globalThis.Bot
-            const bots = BotObj?.bots && typeof BotObj.bots === 'object' ? Object.values(BotObj.bots) : []
-            bot = bots.find(b => typeof b?.sendApi === 'function') || null
-            if (!bot && typeof BotObj?.sendApi === 'function') bot = BotObj
-        } catch {}
-        if (!bot?.sendApi) throw new Error('OneBot 未连接，无法拉取群历史')
-
-        const res = await bot.sendApi('get_group_msg_history', { group_id: gid, count })
-        let msgs = res?.data?.messages || res?.messages || []
-        if (!Array.isArray(msgs)) msgs = []
-
-        const startTs = options.start ? new Date(options.start).getTime() / 1000 : 0
-        const endTs = options.end ? new Date(options.end).getTime() / 1000 + 86400 : Infinity
-        msgs = msgs.filter(m => {
-            const t = Number(m.time || 0)
-            return t >= startTs && t <= endTs
-        })
-
-        const lines = []
-        for (const m of msgs) {
-            const text = Array.isArray(m.message)
-                ? m.message.filter(x => x.type === 'text').map(x => x.data?.text || '').join('')
-                : String(m.raw_message || '')
-            const t = text.replace(/\s+/g, ' ').trim()
-            if (!t) continue
-            const sender = m.sender || {}
-            const name = sender.card || sender.nickname || String(m.user_id || '')
-            const qq = String(m.user_id || sender.user_id || '')
-            const stamp = new Date(Number(m.time || 0) * 1000).toLocaleString('zh-CN', {
-                month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-            })
-            lines.push(`[${stamp}] [${name}(${qq})]: ${t.slice(0, 150)}`)
-        }
-        if (!lines.length) throw new Error('所选范围内没有可总结的聊天记录')
-
-        const system = '你是群聊记忆整理专家。根据群聊记录提炼群层面的长期记忆，只输出 JSON，不要解释。'
-        const user =
-            `下面是群 ${gid} 的 ${lines.length} 条聊天记录。\n\n` +
-            '输出 JSON：\n' +
-            '{"topics":["长期话题"],"relations":["A(QQ)和B(QQ)：关系描述"],"summary":"近期上下文总结，200字以内"}\n\n' +
-            '要求：\n' +
-            '- topics 最多 12 条，只写能长期复用的主题\n' +
-            '- relations 最多 12 条，写清双方昵称和 QQ\n' +
-            '- summary 200 字以内\n' +
-            '- 没有的内容用空数组/空字符串\n' +
-            '- 只输出 JSON\n\n聊天记录：\n' +
-            lines.join('\n')
-
-        const model = config.get('memory.model') || undefined
-        const client = await LlmService.getChatClient({ model })
-        const usedModel = client._channelInfo?.model || config.get('llm.defaultModel')
-        const parseJson = text => {
-            const t = String(text || '').trim()
-            const matches = t.match(/\{[\s\S]*?\}/g)
-            if (!matches) return {}
-            for (let i = matches.length - 1; i >= 0; i--) {
-                try {
-                    const o = JSON.parse(matches[i])
-                    if (o && (o.topics || o.relations || o.summary)) return o
-                } catch {}
-            }
-            return {}
-        }
-
-        let raw = ''
-        // 记忆总结走 Command Code 中转（要求 JSON 输出）
-        const channels = config.get('channels') || []
-        const relay = channels.find(c => String(c.baseUrl || '').includes('commandcode.ai')) ||
-            channels.find(c => String(c.id || '') === 'openai-7e637d96')
-
-        const callRelay = async () => {
-            if (!relay?.apiKey || !relay?.baseUrl) throw new Error('未配置 Command Code 中转渠道')
-            const url = String(relay.baseUrl).replace(/\/$/, '') + '/chat/completions'
-            const header = {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${relay.apiKey}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
-            }
-            const makeBody = extraSystem =>
-                JSON.stringify({
-                    model: 'deepseek/deepseek-v4.1-flash',
-                    messages: [
-                        { role: 'system', content: system + (extraSystem ? ' ' + extraSystem : '') },
-                        { role: 'user', content: user }
-                    ],
-                    temperature: 0.2,
-                    max_tokens: 3000,
-                    response_format: { type: 'json_object' }
-                })
-
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    const ctrl = new AbortController()
-                    const timer = setTimeout(() => ctrl.abort(), 120000)
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        headers: header,
-                        body: makeBody(attempt === 2 ? '只输出 JSON 对象，不要任何解释。' : ''),
-                        signal: ctrl.signal
-                    })
-                    clearTimeout(timer)
-                    const rawText = await resp.text().catch(() => '')
-                    if (!resp.ok) {
-                        logger.debug(`[MemoryManager] 中转 HTTP ${resp.status}: ${rawText.slice(0, 120)}`)
-                        continue
-                    }
-                    const data = JSON.parse(rawText || '{}')
-                    const out = String(data?.choices?.[0]?.message?.content || '')
-                    if (out.trim()) return out
-                } catch (err) {
-                    logger.debug(`[MemoryManager] 中转尝试${attempt}失败: ${err.message}`)
-                }
-            }
-            return ''
-        }
-
-        raw = await callRelay()
-        let obj = parseJson(raw)
-
-        if (!obj.topics && !obj.relations && !obj.summary) {
-            throw new Error('中转站暂时不可用或未返回有效 JSON，请稍后重试')
-        }
-
-        obj = parseJson(raw)
-        if (!obj.topics && !obj.relations && !obj.summary) {
-            throw new Error('模型没有返回有效 JSON：' + String(raw).trim().slice(0, 80))
-        }
-        const topics = (obj.topics || []).map(x => String(x).trim()).filter(Boolean).slice(0, 12)
-        const relations = (obj.relations || []).map(x => String(x).trim()).filter(Boolean).slice(0, 12)
-        const summary = String(obj.summary || '').trim()
-        if (!topics.length && !relations.length && !summary) {
-            throw new Error('模型没有返回有效 JSON：' + raw.slice(0, 80))
-        }
-
-        const db = databaseService.db
-        if (db) {
-            const now = Date.now()
-            const uid = `群${gid}`
-            const del = db.prepare("DELETE FROM structured_memories WHERE group_id = ? AND source = 'manual_summary'")
-            const ins = db.prepare(`
-                INSERT INTO structured_memories
-                (user_id, group_id, category, sub_type, content, confidence, source, metadata, created_at, updated_at, expires_at, is_active)
-                VALUES (?, ?, ?, 'general', ?, 0.85, 'manual_summary', NULL, ?, ?, NULL, 1)
-            `)
-            db.transaction(() => {
-                del.run(gid)
-                for (const t of topics) ins.run(uid, gid, 'topic', t, now, now)
-                for (const r of relations) ins.run(uid, gid, 'relation', r, now, now)
-                if (summary) ins.run(uid, gid, 'summary', summary, now, now)
-            })()
-        }
-
-        // 群总结同时写入知识图谱（群级 scope）
-        // 直接用总结出的话题/关系构建，避免再花一次 LLM 调用（之前那次常返回空文本）
-        if (config.get('memory.knowledgeGraph') !== false && config.get('memory.knowledgeGraphExtraction') === true) {
-            try {
-                const { createHash } = await import('node:crypto')
-                const db = databaseService.db
-                if (db) {
-                    const scopeId = `group:${gid}`
-                    const now = Date.now()
-                    const hash = v => createHash('md5').update(String(v)).digest('hex').slice(0, 8)
-                    const findEntity = db.prepare('SELECT entity_id FROM kg_entities WHERE scope_id = ? AND name = ? LIMIT 1')
-                    const insEntity = db.prepare(`
-                        INSERT INTO kg_entities (entity_id, entity_type, name, scope_id, properties, embedding, created_at, updated_at, version)
-                        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 1)
-                    `)
-                    const findRel = db.prepare(
-                        'SELECT relationship_id FROM kg_relationships WHERE scope_id = ? AND from_entity_id = ? AND to_entity_id = ? AND relation_type = ? LIMIT 1'
-                    )
-                    const insRel = db.prepare(`
-                        INSERT INTO kg_relationships (relationship_id, from_entity_id, to_entity_id, relation_type, properties, scope_id, created_at, updated_at, version)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    `)
-                    const ensureEntity = (name, type, props = {}) => {
-                        const n = String(name || '').trim()
-                        if (!n) return null
-                        const found = findEntity.get(scopeId, n)
-                        if (found) return found.entity_id
-                        const eid = `${scopeId}:entity:${hash(n + '|' + type)}`
-                        insEntity.run(eid, type, n, scopeId, JSON.stringify(props), now, now)
-                        return eid
-                    }
-                    let addedEntities = 0
-                    let addedRelations = 0
-                    db.transaction(() => {
-                        for (const t of topics) {
-                            const n = String(t || '').trim()
-                            if (!n) continue
-                            if (!findEntity.get(scopeId, n)) {
-                                ensureEntity(n, 'concept')
-                                addedEntities++
-                            }
-                        }
-                        for (const r of relations) {
-                            const text = String(r || '')
-                            const people = []
-                            const re = /([^()（）和,，、:：]{1,20})[（(](\d{5,12})[)）]/g
-                            let m
-                            while ((m = re.exec(text)) !== null) people.push({ name: m[1].trim(), qq: m[2] })
-                            if (people.length < 2) continue
-                            const ids = []
-                            for (const person of people.slice(0, 2)) {
-                                const before = findEntity.get(scopeId, person.name)
-                                const eid = ensureEntity(person.name, 'person', { qq: person.qq })
-                                if (!before) addedEntities++
-                                ids.push(eid)
-                            }
-                            if (ids[0] && ids[1] && ids[0] !== ids[1]) {
-                                if (!findRel.get(scopeId, ids[0], ids[1], 'knows')) {
-                                    insRel.run(
-                                        `rel:${hash(ids[0] + ids[1] + 'knows')}`,
-                                        ids[0],
-                                        ids[1],
-                                        'knows',
-                                        JSON.stringify({ 描述: text.slice(0, 120) }),
-                                        scopeId,
-                                        now,
-                                        now
-                                    )
-                                    addedRelations++
-                                }
-                            }
-                        }
-                    })()
-                    logger.mark(`[MemoryManager] 群总结已写入知识图谱: 新增实体${addedEntities} 关系${addedRelations}`)
-                }
-            } catch (err) {
-                logger.warn('[MemoryManager] 知识图谱写入异常:', err.message)
-            }
-        }
-
-        return { messageCount: lines.length, topics, relations, summary }
-    }
-
-    _syncGroupMemoriesToStructured(groupId, topics = [], relations = []) {
-        if ((!topics || !topics.length) && (!relations || !relations.length)) return
-        const db = databaseService.db
-        if (!db) return
-        const gid = String(groupId)
-        const now = Date.now()
-        const del = db.prepare(
-            "DELETE FROM structured_memories WHERE group_id = ? AND source = 'group_context' AND category IN ('topic','relation')"
-        )
-        const ins = db.prepare(`
-            INSERT INTO structured_memories
-            (user_id, group_id, category, sub_type, content, confidence, source, metadata, created_at, updated_at, expires_at, is_active)
-            VALUES (?, ?, ?, 'general', ?, 0.6, 'group_context', NULL, ?, ?, NULL, 1)
-        `)
-        const tx = db.transaction(() => {
-            del.run(gid)
-            for (const t of topics) ins.run(`群${gid}`, gid, 'topic', String(t), now, now)
-            for (const r of relations) ins.run(`群${gid}`, gid, 'relation', String(r), now, now)
-        })
-        tx()
-    }
-
-    /** 判断是不是模型跑偏的无效记忆（描述"没有发言"之类） */
-    /** 把 LLM 的 JSON 输出转成内部的【用户】【话题】【关系】行；解析失败返回 null */
-    _jsonToMemoryLines(text) {
-        const raw = String(text || '').trim()
-        if (!raw) return null
-        let s = raw.replace(/```json/gi, '```').replace(/```/g, '').trim()
-        const objStart = s.indexOf('{')
-        const arrStart = s.indexOf('[')
-        let start = -1
-        if (arrStart >= 0 && (objStart < 0 || arrStart < objStart)) start = arrStart
-        else if (objStart >= 0) start = objStart
-        if (start < 0) return null
-        const open = s[start]
-        const close = open === '{' ? '}' : ']'
-        const end = s.lastIndexOf(close)
-        if (end <= start) return null
-        let data
-        try {
-            data = JSON.parse(s.slice(start, end + 1))
-        } catch {
-            return null
-        }
-        const items = Array.isArray(data) ? data : data.memories || data.items || data.data
-        if (!Array.isArray(items)) return null
-        const lines = []
-        for (const it of items) {
-            if (typeof it === 'string') {
-                if (it.trim()) lines.push(it.trim())
-                continue
-            }
-            if (!it || typeof it !== 'object') continue
-            const type = String(it.type || it.category || '').toLowerCase()
-            const content = String(it.content || it.text || it.memory || it.value || '').trim()
-            if (!content) continue
-            const name = String(it.name || it.nickname || it.user || '').trim()
-            if ((type === 'user' || type === '用户') && name) lines.push(`【用户:${name}】${content}`)
-            else if (type === 'topic' || type === '话题') lines.push(`【话题】${content}`)
-            else if (type === 'relation' || type === '关系') lines.push(`【关系】${content}`)
-            else lines.push(content)
-        }
-        return lines
-    }
-
-    _isJunkMemoryLine(text) {
-        const t = String(text || '').trim()
-        if (t.length < 4) return true
-        if (/^(用户|群友|助手|系统)\s*[:：]/.test(t)) return true
-        if (/没有.{0,6}(发言|说过话|内容|信息)/.test(t)) return true
-        if (/本次要总结|无法提取|暂无可提取|没有可提取|本次对话/.test(t)) return true
-        if (/^[\[【]?群友\[/.test(t)) return true
-        if (/无具体个人信息|无信息|无个人信息|提及用户|说了几句话/.test(t)) return true
-        if (/撤回了一条.{0,6}消息/.test(t)) return true
-        if (/^["“][^"”]{0,30}["”]\s*[-—]/.test(t)) return true
-        if (/没有透露|没有新的?.{0,8}信息|输出\s*["“]?无|已在记忆中/.test(t)) return true
-        if (/^现有记忆[:：]?$/.test(t)) return true
-        if (/^["“]?无["”]?[。.!！]?$/.test(t)) return true
-        if (/最新对话中|用户(说|问)了?[:：]?$/.test(t)) return true
-        if (/^["“][^"”]{0,40}["”]$/.test(t)) return true
-        if (/^(但|不过|然而|所以|因此|现有记忆|保留)/.test(t)) return true
-        if (/可以保留|有点重复|输出一条|是否明确|已足够|无需新增/.test(t)) return true
-        if (/现有记忆|需要合并|规则(说|要求)|输出应该|等等|助手\.\.\.|\.\.\.$/.test(t)) return true
-        if (/在对话中说了/.test(t)) return true
-        if (/^["“][^"”]*["”]\s*[（(]/.test(t)) return true
-        if (/(对话|消息|聊天)记录|只发了|只说了|原话/.test(t)) return true
-        if (/^\[[^\]]+\](\[[^\]]*\])?\s*[:：]/.test(t)) return true
-        if (/^\[[^\]]+\]\s*\[/.test(t)) return true
-        if (/^\[[^\]]+\]\s*叫/.test(t)) return true
-        if (/^(这些|其他|最新|该用户|综上|注[:：]|说明[:：]|这条|但再|可能矛盾|需要合并)/.test(t)) return true
-        if (/^(Final|Need|Let me|I |The |Consider|Wait|Okay|Sure|Output|We |And |But )/i.test(t)) return true
-        if (/only json|json only|output json|JSON\.?$/i.test(t)) return true
-        if (/^(分析|思考|推理|判断|结论)[:：]/.test(t)) return true
-        if (/[:：]\s*$/.test(t)) return true
-        return false
-    }
-
-    /** 根据内容粗略推断分类，够 Web 展示用 */
-    _inferMemoryCategory(text) {
-        const t = String(text || '')
-        if (/偏好|喜欢|讨厌|爱吃|爱喝|不爱|最爱|怕|过敏/.test(t)) return 'preference'
-        if (/关系|朋友|姐姐|哥哥|妹妹|弟弟|师父|师祖|师姐|师兄|老婆|老公|对象|情侣|认识/.test(t)) return 'relation'
-        if (/话题|讨论|聊到|提到/.test(t)) return 'topic'
-        return 'profile'
-    }
-
-    /** 把用户记忆同步到 structured_memories（Web 记忆管理读这张表） */
-    _syncUserMemoriesToStructured(userId, groupId, memories, source = 'summary') {
-        const db = databaseService.db
-        if (!db) return
-        const uid = String(userId ?? '').replace(/\.0+$/, '').trim()
-        if (!uid) return
-        const gid = groupId === undefined || groupId === null || groupId === '' ? null : String(groupId)
-        const valid = (memories || [])
-            .map(m => (typeof m === 'string' ? m : m?.content))
-            .map(t => String(t || '').trim())
-            .filter(t => t && !this._isJunkMemoryLine(t))
-        if (!valid.length) return
-
-        const now = Date.now()
-        const del = gid
-            ? db.prepare("DELETE FROM structured_memories WHERE user_id = ? AND group_id = ? AND source = 'memory_summary'")
-            : db.prepare("DELETE FROM structured_memories WHERE user_id = ? AND group_id IS NULL AND source = 'memory_summary'")
-        const ins = db.prepare(`
-            INSERT INTO structured_memories
-            (user_id, group_id, category, sub_type, content, confidence, source, metadata, created_at, updated_at, expires_at, is_active)
-            VALUES (?, ?, ?, 'general', ?, 0.7, 'memory_summary', NULL, ?, ?, NULL, 1)
-        `)
-        const tx = db.transaction(() => {
-            del.run(...(gid ? [uid, gid] : [uid]))
-            for (const text of valid) {
-                ins.run(uid, gid, this._inferMemoryCategory(text), text, now, now)
-            }
-        })
-        tx()
-    }
-
     _isInvalidMemoryLine(line) {
         const trimmed = line.trim()
 
@@ -1057,17 +612,25 @@ export class MemoryManager {
     async pollAndSummarize() {
         if (!config.get('memory.enabled')) return
 
+        // 重入保护：上一轮尚未结束时不启动新一轮。轮询路径是记忆 LLM 请求的最大来源之一，
+        // 单轮最多处理批上限个目标 × 每目标最多一次 LLM，慢渠道（含多次重试）很容易让单轮
+        // 耗时超过 pollInterval，无守卫会导致多个轮次并行叠加。
+        if (this._pollRunning) {
+            logger.debug('[MemoryManager] 上一轮轮询尚未结束，跳过本轮')
+            return
+        }
+        this._pollRunning = true
         try {
             // 获取最近有对话的用户
             const conversations = databaseService.getConversations()
             // 私聊按用户去重；共享群必须按「群 + 持久化发送者」去重，不能把群 ID 当用户 ID。
             const processedUsers = new Set()
-            const minPollInterval = (config.get('memory.minPollInterval') || 30) * 60 * 1000 // 默认30分钟
+            const minPollInterval = (config.get('memory.minPollInterval') || 180) * 60 * 1000 // 默认180分钟
+            const pollBatchSize =
+                (config.get('memory.pollBatchSize') || 20) <= 0 ? 20 : config.get('memory.pollBatchSize')
             const now = Date.now()
 
             for (const conv of conversations) {
-                // group_summary_* 是群消息缓冲，不是用户，喂给记忆总结纯属烧钱
-                if (typeof conv.id === 'string' && conv.id.startsWith('group_summary_')) continue
                 const sharedGroupConversation = typeof conv.id === 'string' && /^group:[^:]+$/.test(conv.id)
                 const targets = []
 
@@ -1116,8 +679,7 @@ export class MemoryManager {
                     if (convTime <= lastPoll) continue
 
                     // 共享群携带精确 groupId，使 listUserConversations 只读取当前群并按 sender 归属轮次。
-                    // since 让总结只看游标之后的新消息，避免每轮重复总结旧上下文
-                    await this.analyzeUserConversations(target.userId, { ...(target.options || {}), since: lastPoll })
+                    await this.analyzeUserConversations(target.userId, target.options)
                     this.lastPollTime.set(target.pollKey, now)
                     this._capTimeMap(this.lastPollTime)
                     try {
@@ -1127,11 +689,11 @@ export class MemoryManager {
                     }
 
                     // 避免一次处理太多用户
-                    if (processedUsers.size >= 100) break
+                    if (processedUsers.size >= pollBatchSize) break
                 }
 
-                // 避免一次处理太多用户，限制单次轮询最多处理10个用户
-                if (processedUsers.size >= 100) {
+                // 单次轮询的目标数上限，避免一次打满渠道
+                if (processedUsers.size >= pollBatchSize) {
                     logger.debug(`[MemoryManager] 单次轮询处理了 ${processedUsers.size} 个用户，等待下次轮询`)
                     break
                 }
@@ -1142,6 +704,8 @@ export class MemoryManager {
             }
         } catch (error) {
             logger.warn('[MemoryManager] 轮询处理失败:', error.message)
+        } finally {
+            this._pollRunning = false
         }
     }
 
@@ -1170,15 +734,12 @@ export class MemoryManager {
             let recentConv = null
             let messages = []
             for (const conversation of conversations) {
-                const isGroupConv = String(conversation.conversationId || '').startsWith('group:')
-                const convMessages = isGroupConv
-                    ? databaseService.getMessages(conversation.conversationId, 30)
-                    : databaseService.getMessagesForUser(conversation.conversationId, userId, 30)
+                const userMessages = databaseService.getMessagesForUser(conversation.conversationId, userId, 30)
                 if (
-                    convMessages.filter(message => message.role === 'user' || message.role === 'assistant').length >= 2
+                    userMessages.filter(message => message.role === 'user' || message.role === 'assistant').length >= 2
                 ) {
                     recentConv = conversation
-                    messages = convMessages
+                    messages = userMessages
                     break
                 }
             }
@@ -1191,28 +752,10 @@ export class MemoryManager {
             }
 
             const isGroupConversation = recentConv.conversationId.startsWith('group:')
-
-            // 只保留游标之后的新消息，避免每 2 小时重复总结同一段旧上下文
-            const since = Number(options?.since) || 0
-            if (since > 0) {
-                messages = messages.filter(m => Number(m.timestamp || 0) > since)
-            }
-            if (messages.length === 0) {
-                return { success: false, error: '游标之后没有新消息', reason: 'no_new_messages' }
-            }
-
-            // 群聊消息里可能包着 bym 的【最近群聊记录】/【本轮上下文】块，剥掉后再判断内容量
-            const cleanContent = text =>
-                String(text || '')
-                    .replace(/【最近群聊记录】[\s\S]*?(?:请基于以上聊天记录[^\n]*|$)/g, ' ')
-                    .replace(/【本轮上下文[^\n]*】[\s\S]*?【以上是上下文[^\n]*】/g, ' ')
-                    .trim()
-
-            let cleanedChars = 0
             const dialogText = messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(m => {
-                    const raw = Array.isArray(m.content)
+                    const content = Array.isArray(m.content)
                         ? m.content
                               .filter(c => c.type === 'text')
                               .map(c => c.text)
@@ -1220,30 +763,12 @@ export class MemoryManager {
                         : typeof m.content === 'string'
                           ? m.content
                           : ''
-                    const content = cleanContent(raw)
-                    if (content.length < 2) return ''
-                    cleanedChars += content.length
-                    if (m.role === 'assistant') return `助手: ${content.substring(0, 200)}`
-                    const senderId = String(m.sender?.user_id ?? m.sender?.userId ?? m.userId ?? '')
-                    // 群聊里归属不明（旧记录无 sender）的消息直接丢弃，避免把群友的话记到用户头上
-                    if (isGroupConversation && !senderId) return ''
-                    const name = m.sender?.card || m.sender?.nickname || senderId || '未知'
-                    const label = senderId ? `${name}(${senderId})` : name
-                    return `[${label}]: ${content.substring(0, 200)}`
+                    return `${m.role === 'user' ? '用户' : '助手'}: ${content.substring(0, 200)}`
                 })
-                .filter(Boolean)
                 .join('\n')
 
-            // 本次要总结的人：昵称(QQ)，避免提示词里出现“用户”这种泛指
-            const targetMsg = messages.find(
-                m => String(m.sender?.user_id ?? m.sender?.userId ?? m.userId ?? '') === String(userId)
-            )
-            const targetName = targetMsg?.sender?.card || targetMsg?.sender?.nickname || String(userId)
-            const targetLabel = `${targetName}(${userId})`
-
-            // 群友聊天也算触发，但清洗后完全没有内容就不调用 LLM
-            if (cleanedChars < 10 || dialogText.length < 10) {
-                return { success: false, error: '新消息没有有效内容，跳过总结', reason: 'insufficient_content' }
+            if (dialogText.length < 50) {
+                return { success: false, error: '可总结的对话内容不足', reason: 'insufficient_content' }
             }
 
             // 获取现有记忆用于合并总结
@@ -1253,10 +778,11 @@ export class MemoryManager {
             const botName = global.Bot?.nickname || config.get('basic.botName') || '助手'
             const contextHint = isGroupConversation
                 ? `这是【群聊】中的对话记录。
-- 每条消息格式为 [昵称(QQ号)]: 内容
-- 本次要总结的人是 ${targetLabel}，只提取此人明确说出的信息
-- 其他 [昵称(QQ号)] 的发言只作为话题背景，不要记到 ${targetLabel} 名下`
-                : `这是【私聊】对话，每条消息格式为 [昵称(QQ号)]: 内容，本次要总结的人是 ${targetLabel}。`
+- "用户:"后面是与机器人直接对话的那个人说的话
+- 消息中的[某某]:xxx格式表示其他群友的发言，不是当前用户
+- 只提取与机器人直接对话的"用户"本人透露的信息
+- 不要把其他群友的信息当成当前用户的信息`
+                : `这是【私聊】对话。"用户:"后面是用户本人说的话。`
 
             // 覆盖式总结prompt - 改进版：更准确区分用户身份
             const prompt = `你是用户记忆管理专家。分析对话，提取用户透露的个人信息。
@@ -1284,18 +810,12 @@ ${dialogText}
 1. 合并现有记忆和新信息，删除重复、过时或已被推翻的条目
 2. 每条必须是用户明确说过的具体事实，不超过50字
 3. 全部用中文书写
-4. 只保留长期稳定的信息：身份、所在地、职业、长期偏好、人际关系、计划、雷点
-5. 不要记录游戏进度/数值/装备、一次性操作、群内打招呼、开关设置、临时状态
-6. 不要以“用户提到…”“用户要求…”“用户选择…”开头
-7. 只记录 ${targetLabel} 本人的信息；助手回复和其他 [昵称(QQ)] 提到的他人信息，不能记到该人名下
-8. 内容里出现别人的 QQ/群名片（与 ${userId} 不一致）时不要记录；称谓必须逐字引用，“师祖”不能写成“师姐”
-9. 每条记忆必须以“昵称(QQ号)”开头，例如“宝了个贝(203231682) 喜欢打游戏”，不要写“用户”“该用户”“本人”
 
-【输出格式（严格 JSON）】
-只输出一个 JSON 对象，不要 markdown 代码块、不要解释、不要思考过程：
-{"memories":[{"category":"profile","content":"宝了个贝(203231682) 不超过50字的具体事实"}]}
-category 可选：profile（基本信息/性格）、preference（偏好习惯）、relation（人际关系）、topic（长期话题）。
-最多10条；没有任何值得记录的信息时输出：{"memories":[]}`
+【输出格式（必须严格遵守）】
+每行一条记忆，最多10条。
+每行只写记忆本身，行首不要加“-”“•”或“1.”之类的符号和编号。
+不要输出小标题、分隔线、步骤说明或任何形式的思考过程。
+没有任何值得记录的信息时，只输出一个字：无`
 
             startTime2 = Date.now()
             const memoryModel2 = config.get('memory.model')
@@ -1315,14 +835,14 @@ category 可选：profile（基本信息/性格）、preference（偏好习惯�
                     disableHistorySave: true,
                     ...(_temp2 !== undefined ? { temperature: _temp2 } : {})
                 },
-                'MemoryAnalyzeUser'
+                'MemoryAnalyzeUser',
+                memoryUserId
             )
 
             const responseText = result.contents?.[0]?.text?.trim() || ''
 
             // 覆写旧 memories 表前，不是纯文本就原样解析；语言字数不够则按现状读取
-            const jsonUserLines = this._jsonToMemoryLines(responseText)
-            const memoryLines = jsonUserLines || responseText
+            const memoryLines = responseText
                 .split(/\r?\n/)
                 .map(line =>
                     String(line || '')
@@ -1348,7 +868,7 @@ category 可选：profile（基本信息/性格）、preference（偏好习惯�
                     reportedModel: result.model || null,
                     duration: Date.now() - startTime2,
                     success: recordSuccess,
-                    source: '个人记忆总结',
+                    source: '记忆总结',
                     userId,
                     responseText,
                     apiUsage: result.usage,
@@ -1372,20 +892,8 @@ category 可选：profile（基本信息/性格）、preference（偏好习惯�
                 return { success: false, error: '总结结果没有可保存的记忆条目', reason: 'invalid_summary' }
             }
 
-            // 写入前过滤临时/游戏进度类内容
-            const durableMemories = newMemories.filter(
-                m => !isTransientMemory(m) && !mentionsOtherQQ(m, userId)
-            )
-            if (durableMemories.length === 0) {
-                logger.debug('[MemoryManager] 总结结果全部为临时内容，跳过写入')
-                return { success: false, error: '总结结果均为临时内容', reason: 'all_transient' }
-            }
-            if (durableMemories.length !== newMemories.length) {
-                logger.debug(`[MemoryManager] 过滤临时记忆 ${newMemories.length - durableMemories.length} 条`)
-            }
-
             // 覆盖式替换：清除旧记忆，保存新记忆
-            const replaced = await this.replaceUserMemories(userId, durableMemories, 'poll_summary', { groupId })
+            const replaced = await this.replaceUserMemories(userId, newMemories, 'poll_summary', { groupId })
             if (!replaced) {
                 return { success: false, error: '写入总结结果失败', reason: 'replace_failed' }
             }
@@ -1405,7 +913,7 @@ category 可选：profile（基本信息/性格）、preference（偏好习惯�
                     duration: startTime2 ? Date.now() - startTime2 : 0,
                     success: false,
                     error: error.message || String(error),
-                    source: '个人记忆总结',
+                    source: '记忆总结',
                     userId,
                     ...(groupId !== undefined && groupId !== null && groupId !== '' ? { groupId } : {})
                 })
@@ -1486,12 +994,6 @@ category 可选：profile（基本信息/性格）、preference（偏好习惯�
                     metadata: { replacedAt }
                 }))
             )
-
-            try {
-                this._syncUserMemoriesToStructured(userId, options?.groupId, memories || [], source)
-            } catch (err) {
-                logger.debug('[MemoryManager] 同步用户记忆到结构化失败:', err.message)
-            }
 
             logger.debug(`[MemoryManager] 替换记忆 [${storageUserId}]: ${written}条`)
             return true
@@ -1577,7 +1079,8 @@ ${existingMemoryList || '暂无'}
                     disableHistorySave: true,
                     ...(_temp3 !== undefined ? { temperature: _temp3 } : {})
                 },
-                'MemoryAutoExtract'
+                'MemoryAutoExtract',
+                this.getScopedMemoryUserId(userId, options?.groupId)
             )
 
             const responseText = result.contents?.[0]?.text?.trim()
@@ -1604,8 +1107,7 @@ ${existingMemoryList || '暂无'}
             if (!responseText || responseText === '无' || responseText.length < 5) return null
 
             // 解析并覆盖替换记忆
-            let newMemories = this._parseMemoryResponse(responseText)
-            newMemories = newMemories.filter(m => !isTransientMemory(m) && !mentionsOtherQQ(m, userId))
+            const newMemories = this._parseMemoryResponse(responseText)
             if (newMemories.length > 0) {
                 await this.replaceUserMemories(userId, newMemories, 'auto_extract', options)
                 logger.debug(`[MemoryManager] 自动提取并合并记忆: ${newMemories.length}条`)
@@ -1644,23 +1146,38 @@ ${existingMemoryList || '暂无'}
      * @param {string} caller - 调用者标签
      * @returns {Promise<Object>} 客户端响应
      */
-    async _sendMemoryLlm(client, message, requestOptions, caller) {
+    /**
+     * 通过委托器发送记忆 LLM 请求。
+     * 统一经记忆模块并发闸门，避免轮询/手动入口同时占满渠道。
+     *
+     * @param {Object} client - LlmService.getChatClient 构造的内部客户端
+     * @param {Object} message - 用户消息
+     * @param {Object} requestOptions - 请求选项
+     * @param {string} [caller] - 调用者标识
+     * @param {string} [scopeKey] - 作用域标识（用于日志与限流归因）
+     * @returns {Promise<Object>} 原始响应
+     */
+    async _sendMemoryLlm(client, message, requestOptions, caller, scopeKey = null) {
         const isInternalClient =
             typeof client?._channelInfo?.id === 'string' &&
             (typeof client?.sendMessage === 'function' || typeof client?.sendMessageWithHistory === 'function')
         if (!isInternalClient) {
             throw new Error('[MemoryManager] 非内部客户端无法委托调度，请使用 getChatClient 构造客户端')
         }
-        const result = await delegateRequest({
-            userMessage: message,
-            initialModel: requestOptions.model || client._channelInfo?.model,
-            initialChannel: client._channelInfo?.channel || null,
-            initialClient: client,
-            clientBaseOptions: {},
-            requestOptions,
-            event: null,
-            source: caller || 'memory'
-        })
+        const result = await memoryLlmScheduler.run(
+            () =>
+                delegateRequest({
+                    userMessage: message,
+                    initialModel: requestOptions.model || client._channelInfo?.model,
+                    initialChannel: client._channelInfo?.channel || null,
+                    initialClient: client,
+                    clientBaseOptions: {},
+                    requestOptions,
+                    event: null,
+                    source: caller || 'memory'
+                }),
+            { caller: caller || 'memory', scopeKey }
+        )
         return result.response
     }
 
@@ -2073,16 +1590,10 @@ ${existingMemoryList || '暂无'}
 
             // 5. 构建对话文本
             const timeRangeMinutes = Math.round(timeRange / 60000)
-            const dialogText = allMessages
-                .map(m => {
-                    const qq = String(m.userId ?? m.user_id ?? m.sender?.user_id ?? '')
-                    const name = m.nickname || m.sender?.card || m.sender?.nickname || qq || '未知'
-                    return `[${name}${qq ? `(${qq})` : ''}]: ${String(m.content || '').substring(0, 150)}`
-                })
-                .join('\n')
+            const dialogText = allMessages.map(m => `[${m.nickname}]: ${m.content.substring(0, 150)}`).join('\n')
 
-            // 6. 构建总结提示词：固定指令走 system 命中缓存，数据走 user
-            const { system: timeRangeSystem, user: timeRangeUser } = buildGroupMemoryPrompts({
+            // 6. 构建总结prompt，与 analyzeGroupContext 共用同一份模板
+            const prompt = buildGroupMemoryPrompt({
                 dialogText,
                 existingMemoryText,
                 maxItems: 20,
@@ -2099,15 +1610,15 @@ ${existingMemoryList || '暂无'}
             const _temp4 = resolveClientTemperature(client, 0.3)
             const result = await this._sendMemoryLlm(
                 client,
-                { role: 'user', content: [{ type: 'text', text: timeRangeUser }] },
+                { role: 'user', content: [{ type: 'text', text: prompt }] },
                 {
                     model: usedModel,
                     maxToken: 800,
                     disableHistorySave: true,
-                    systemOverride: timeRangeSystem,
                     ...(_temp4 !== undefined ? { temperature: _temp4 } : {})
                 },
-                'MemoryTimeRange'
+                'MemoryTimeRange',
+                `group:${groupId}`
             )
 
             const responseText = result.contents?.[0]?.text?.trim() || ''
@@ -2142,8 +1653,7 @@ ${existingMemoryList || '暂无'}
             }
 
             // 8. 解析并保存记忆
-            const jsonLines = this._jsonToMemoryLines(responseText)
-            const lines = jsonLines || responseText.split('\n').filter(line => line.trim())
+            const lines = responseText.split('\n').filter(line => line.trim())
             const newTopics = []
             const newRelations = []
             const newUserInfos = new Map()
@@ -2167,7 +1677,7 @@ ${existingMemoryList || '暂无'}
                 if (topicMatch) {
                     const topic = topicMatch[1].trim()
                     if (topic.length > 3 && topic.length < 100) {
-                        if (!this._isJunkMemoryLine(topic)) newTopics.push(topic)
+                        newTopics.push(topic)
                     }
                     continue
                 }
@@ -2176,7 +1686,7 @@ ${existingMemoryList || '暂无'}
                 if (relationMatch) {
                     const relation = relationMatch[1].trim()
                     if (relation.length > 3 && relation.length < 100) {
-                        if (!this._isJunkMemoryLine(relation)) newRelations.push(relation)
+                        newRelations.push(relation)
                     }
                 }
             }

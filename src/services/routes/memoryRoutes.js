@@ -5,8 +5,8 @@
 import express from 'express'
 import { ChaiteResponse, getRawDatabase } from './shared.js'
 import { memoryService } from '../memory/MemoryService.js'
-import { memoryManager } from '../storage/MemoryManager.js'
 import { memorySummarizer } from '../memory/MemorySummarizer.js'
+import { memoryLlmScheduler } from '../memory/MemoryLlmScheduler.js'
 import { MemoryCategory, CategoryLabels, isValidCategory } from '../memory/MemoryTypes.js'
 
 const router = express.Router()
@@ -23,18 +23,7 @@ function validateMemoryIdParam(req, res, next) {
 router.get('/users', async (req, res) => {
     try {
         const users = await memoryService.listUsers()
-        // 群记忆和会话缓冲键都不属于个人记忆
-        const isNotUser = id => {
-            const v = String(id ?? '')
-            return (
-                v.startsWith('群') ||
-                v.startsWith('group_summary_') ||
-                v.startsWith('bym_group_') ||
-                v.startsWith('group:') ||
-                /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-/.test(v)
-            )
-        }
-        res.json(ChaiteResponse.ok(users.filter(u => !isNotUser(u.userId))))
+        res.json(ChaiteResponse.ok(users))
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))
     }
@@ -183,7 +172,33 @@ router.post('/user/:userId', async (req, res) => {
 router.post('/user/:userId/summarize', async (req, res) => {
     try {
         const { userId } = req.params
-        const { useLLM = true, groupId, model, cleanup = true } = req.body || {}
+        const { useLLM = true, groupId, model, cleanup = true, force = false } = req.body || {}
+
+        /*
+         * per-user 冷却：手动总结与自动链路共享同一频率闸门。
+         * HTTP 入口忽略消息水位（requireMessages=false），仅受冷却约束；
+         * force=true 供脚本跳过冷却（前端不传）。
+         */
+        const scopeKey =
+            groupId === undefined || groupId === null || groupId === ''
+                ? `user:${userId}`
+                : `group:${groupId}:user:${userId}`
+        if (!force) {
+            const gate = memoryLlmScheduler.checkGate(scopeKey, { requireMessages: false })
+            if (!gate.allowed) {
+                const minutes = Math.max(1, Math.ceil((gate.retryAfterSeconds || 0) / 60))
+                res.json(
+                    ChaiteResponse.ok({
+                        success: false,
+                        skipped: true,
+                        reason: gate.reason,
+                        retryAfterSeconds: gate.retryAfterSeconds,
+                        error: `总结冷却中，约 ${minutes} 分钟后可再次总结`
+                    })
+                )
+                return
+            }
+        }
 
         const result = await memorySummarizer.summarizeUserMemories(userId, {
             useLLM,
@@ -191,6 +206,7 @@ router.post('/user/:userId/summarize', async (req, res) => {
             ...(groupId !== undefined ? { groupId } : {}),
             ...(model ? { model } : {})
         })
+        if (result?.success) memoryLlmScheduler.markProcessed(scopeKey)
         res.json(ChaiteResponse.ok(result))
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))
@@ -229,27 +245,6 @@ router.delete('/user/:userId', async (req, res) => {
                 deletedCount: count
             })
         )
-    } catch (error) {
-        res.status(500).json(ChaiteResponse.fail(null, error.message))
-    }
-})
-
-// POST /group/:groupId/summarize - 按数量/日期范围总结群记忆
-router.post('/group/:groupId/summarize', async (req, res) => {
-    try {
-        const { count, start, end } = req.body || {}
-        const result = await memoryManager.summarizeGroupFromHistory(req.params.groupId, { count, start, end })
-        res.json(ChaiteResponse.ok(result))
-    } catch (error) {
-        res.status(500).json(ChaiteResponse.fail(null, error.message))
-    }
-})
-
-// GET /groups - 获取群记忆的群列表
-router.get('/groups', async (req, res) => {
-    try {
-        const groups = await memoryService.listGroups()
-        res.json(ChaiteResponse.ok(groups))
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))
     }
@@ -376,18 +371,17 @@ router.post('/merge/:userId', async (req, res) => {
 // POST / - 添加记忆（兼容旧接口）
 router.post('/', async (req, res) => {
     try {
-        const { userId, content, category = 'custom', metadata, groupId, source = 'manual' } = req.body
+        const { userId, content, category = 'custom', metadata } = req.body
         if (!userId || !content) {
             return res.status(400).json(ChaiteResponse.fail(null, 'userId and content are required'))
         }
 
         const memory = await memoryService.saveMemory({
             userId,
-            groupId: groupId === undefined || groupId === null || groupId === '' ? undefined : String(groupId),
             category,
             content,
             confidence: 0.9,
-            source,
+            source: 'manual',
             metadata
         })
 

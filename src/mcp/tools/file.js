@@ -114,8 +114,11 @@ function isPathDangerous(targetPath) {
 export function getSafePath(targetPath) {
     // 沙箱根校验（含符号链接解析），越界直接抛错
     const resolved = resolveSandboxPath(targetPath, { root: PLUGIN_ROOT })
-    // 保留原有系统目录黑名单作为额外一层防护
-    if (isPathDangerous(resolved)) {
+    // 沙箱内的路径天然可信，不再套用系统目录黑名单（否则插件放在 /root 下会全被误伤）
+    const pluginRootLower = path.resolve(PLUGIN_ROOT).toLowerCase()
+    const resolvedLower = resolved.toLowerCase()
+    const inSandbox = resolvedLower === pluginRootLower || resolvedLower.startsWith(pluginRootLower + path.sep)
+    if (!inSandbox && isPathDangerous(resolved)) {
         throw new Error(`禁止操作系统关键目录: ${targetPath}`)
     }
     return resolved

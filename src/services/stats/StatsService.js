@@ -5,10 +5,6 @@
 import { databaseService } from '../storage/DatabaseService.js'
 import { toolCallStats } from './ToolCallStats.js'
 import { usageStats } from './UsageStats.js'
-import { redisClient } from '../../core/cache/RedisClient.js'
-
-/** 每日工具调用计数（Redis hash: chaite:tools_daily:<YYYY-MM-DD>） */
-const TOOLS_DAILY_KEY = 'chaite:tools_daily:'
 import { telemetryService } from '../telemetry/index.js'
 import { chatLogger } from '../../core/utils/logger.js'
 import fs from 'node:fs'
@@ -617,7 +613,6 @@ class StatsService {
                 stream,
                 isEstimated,
                 request,
-                responseText: responseText ? String(responseText).slice(0, 500) : null,
                 response: !success ? response : null
             })
         } catch (err) {
@@ -632,12 +627,6 @@ class StatsService {
      */
     recordToolCall(toolName, success = true) {
         this.init()
-
-        // 每日工具计数（今日用量里的「搜索 N 次」用）
-        try {
-            const day = new Date().toLocaleDateString('sv-SE')
-            redisClient.hincrby(`${TOOLS_DAILY_KEY}${day}`, toolName, 1).catch?.(() => {})
-        } catch {}
 
         this.stats.tools.total++
 
@@ -910,26 +899,26 @@ class StatsService {
     /**
      * 获取 API 调用记录
      */
-    async getApiCalls({ page = 1, limit = 20, channelId, success, startTime, endTime } = {}) {
+    async getApiCalls({ page = 1, limit = 20, channelId, model, source, success, startTime, endTime } = {}) {
         const safePage = Math.max(1, Number(page) || 1)
         const safeLimit = Math.min(200, Math.max(1, Number(limit) || 20))
         const filter = {}
-        if (channelId) filter.channelId = channelId
-        if (success !== undefined) filter.success = success
-        if (startTime) filter.startTime = startTime
-        if (endTime) filter.endTime = endTime
-
-        const records = await usageStats.getRecent(safePage * safeLimit, filter)
-        const start = (safePage - 1) * safeLimit
-        return {
-            records: records.slice(start, start + safeLimit),
-            pagination: {
-                page: safePage,
-                limit: safeLimit,
-                total: records.length,
-                hasMore: records.length > start + safeLimit
-            }
+        const parseTime = value => {
+            if (value === undefined || value === null || value === '') return undefined
+            if (typeof value === 'string' && value.trim() === '') return undefined
+            const numeric = Number(value)
+            return Number.isFinite(numeric) ? numeric : undefined
         }
+        if (channelId) filter.channelId = channelId
+        if (model) filter.model = model
+        if (source) filter.source = source
+        if (success !== undefined) filter.success = success
+        const safeStartTime = parseTime(startTime)
+        const safeEndTime = parseTime(endTime)
+        if (safeStartTime !== undefined) filter.startTime = safeStartTime
+        if (safeEndTime !== undefined) filter.endTime = safeEndTime
+
+        return await usageStats.getRecentPaged(safePage, safeLimit, filter)
     }
 
     /**

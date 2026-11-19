@@ -520,6 +520,14 @@ export class SkillsAgent {
                 })
                 const result = await this._withTimeout(callPromise, timeout, skillName)
 
+                // 工具调用计数（供 #今日用量 统计搜索/抓取次数）
+                try {
+                    const { redisClient } = await import('../../core/cache/RedisClient.js')
+                    if (!redisClient.isConnected) await redisClient.init?.()
+                    const day = new Date().toLocaleDateString('sv-SE')
+                    await redisClient.hincrby(`chaite:tools_daily:${day}`, skill.name, 1)
+                } catch {}
+
                 const resultIsError = isToolResultError(result)
                 this.executionLog.push({
                     skill: skillName,

@@ -151,6 +151,23 @@ function getConfigTimeouts() {
 }
 
 /**
+ * 创建带 abort 预检的 node-fetch 实例，签名与 node-fetch 默认导出一致。
+ *
+ * @returns {Promise<Function>} fetch 函数 (url, options) => Promise<Response>
+ */
+async function createAbortGuardedFetch() {
+    const mod = await import('node-fetch')
+    const nodeFetch = mod.default
+    const { AbortError } = mod
+    return async function abortGuardedFetch(url, options) {
+        if (options?.signal?.aborted) {
+            throw new AbortError('The operation was aborted.')
+        }
+        return await nodeFetch(url, options)
+    }
+}
+
+/**
  * MCP Client - Model Context Protocol 客户端实现
  *
  * @description 支持多种传输类型连接 MCP 服务器
@@ -836,9 +853,69 @@ export class McpClient {
             if (this.process !== child) return
             this.handleData(data)
         })
+        // stderr 是日志通道，不代表日志级别；按行解析，兼容拆包与 UTF-8 分块。
+        const stderrDecoder = new StringDecoder('utf8')
+        const stderrLevels = {
+            debug: 'debug',
+            info: 'info',
+            notice: 'info',
+            warn: 'warn',
+            warning: 'warn',
+            error: 'error',
+            critical: 'error',
+            alert: 'error',
+            emergency: 'error'
+        }
+        const maxStderrLineLength = 65536
+        let stderrBuffer = ''
+        let stderrEnded = false
+        const logStderrLine = line => {
+            const text = line.replace(/\r$/, '')
+            if (!text.trim()) return
+            let level = 'warn'
+            try {
+                const entry = JSON.parse(text)
+                if (typeof entry?.level === 'string') {
+                    const declaredLevel = entry.level.toLowerCase()
+                    if (Object.hasOwn(stderrLevels, declaredLevel)) level = stderrLevels[declaredLevel]
+                }
+            } catch {
+                // 非 JSON、未知级别仍保留警告，不能静默吞掉服务器诊断。
+            }
+            logger[level](`[MCP] Server stderr: ${text}`)
+        }
+        const drainStderr = () => {
+            let newline
+            while ((newline = stderrBuffer.indexOf('\n')) !== -1) {
+                logStderrLine(stderrBuffer.slice(0, newline))
+                stderrBuffer = stderrBuffer.slice(newline + 1)
+            }
+            // 无换行输出也必须有界；超长行按片段保留为诊断日志。
+            while (stderrBuffer.length > maxStderrLineLength) {
+                let sliceEnd = maxStderrLineLength
+                const last = stderrBuffer.charCodeAt(sliceEnd - 1)
+                const next = stderrBuffer.charCodeAt(sliceEnd)
+                // 避免拆开 UTF-16 代理对，导致日志逐条编码为 UTF-8 时损坏字符。
+                if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) sliceEnd -= 1
+                logStderrLine(stderrBuffer.slice(0, sliceEnd))
+                stderrBuffer = stderrBuffer.slice(sliceEnd)
+            }
+        }
         child.stderr.on('data', data => {
-            logger.warn(`[MCP] Server stderr: ${data.toString()}`)
+            if (stderrEnded) return
+            stderrBuffer += stderrDecoder.write(data)
+            drainStderr()
         })
+        const flushStderr = () => {
+            if (stderrEnded) return
+            stderrEnded = true
+            stderrBuffer += stderrDecoder.end()
+            drainStderr()
+            logStderrLine(stderrBuffer)
+            stderrBuffer = ''
+        }
+        child.stderr.once('end', flushStderr)
+        child.stderr.once('close', flushStderr)
         child.stdout.on('error', error => {
             if (this.process !== child) return
             logger.warn(`[MCP] Server stdout error: ${error.message}`)
@@ -903,7 +980,7 @@ export class McpClient {
         const eventSourceOptions = {
             fetch: async (input, init) => {
                 const targetUrl = String(input)
-                const nodeFetch = (await import('node-fetch')).default
+                const nodeFetch = await createAbortGuardedFetch()
                 const response = await nodeFetch(targetUrl, {
                     ...init,
                     ...proxyService.getFetchOptions(targetUrl, 'api'),
@@ -1364,7 +1441,7 @@ export class McpClient {
         let responseText = ''
         let lastError = null
 
-        const nodeFetch = (await import('node-fetch')).default
+        const nodeFetch = await createAbortGuardedFetch()
         for (const [index, url] of messageUrls.entries()) {
             try {
                 if (notification.method !== 'ping') {
@@ -1463,8 +1540,12 @@ export class McpClient {
         let responseText = ''
         let lastError = null
 
-        const nodeFetch = (await import('node-fetch')).default
+        const nodeFetch = await createAbortGuardedFetch()
         for (const [index, url] of messageUrls.entries()) {
+            if (controller.signal.aborted) {
+                lastError = lastError || new Error(`SSE request aborted before POST for ${request.method}`)
+                break
+            }
             try {
                 if (index > 0 && request.method !== 'ping') {
                     logger.debug(`[MCP] Retrying SSE POST to: ${url}, id: ${request.id}, method: ${request.method}`)
@@ -1598,7 +1679,8 @@ export class McpClient {
         this.httpAbortControllers.add(controller)
 
         try {
-            const nodeFetch = (await import('node-fetch')).default
+            /* abortHttpRequests() 可能已中止本控制器，走带预检的包装避免未捕获异常 */
+            const nodeFetch = await createAbortGuardedFetch()
             const response = await nodeFetch(this.httpUrl, {
                 ...proxyService.getFetchOptions(this.httpUrl, 'api'),
                 method: 'POST',
@@ -2358,7 +2440,7 @@ export class McpClient {
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), this.timeouts.terminate)
         try {
-            const nodeFetch = (await import('node-fetch')).default
+            const nodeFetch = await createAbortGuardedFetch()
             const response = await nodeFetch(this.httpUrl, {
                 ...proxyService.getFetchOptions(this.httpUrl, 'api'),
                 method: 'DELETE',

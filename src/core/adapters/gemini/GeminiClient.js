@@ -3,7 +3,6 @@ import crypto from 'node:crypto'
 import { chatLogger } from '../../utils/logger.js'
 import {
     AbstractClient,
-    preprocessImageUrls,
     preprocessImageUrlsForClient,
     parseXmlToolCalls,
     extractText,
@@ -97,9 +96,11 @@ export class GeminiClient extends AbstractClient {
 
     /**
      * 构建 Gemini SDK 的 RequestOptions
-     * 合并自定义 baseUrl 与渠道配置的请求超时（SDK 的 RequestOptions.timeout 单位为毫秒）
+     * 合并自定义 baseUrl 与渠道配置的请求超时（read 与 maxTimeout 取小，SDK 的 RequestOptions.timeout 单位为毫秒）
+     * 该 SDK 无内部重试机制（无 maxRetries 选项），超时经 AbortController 中止请求并抛出
+     * GoogleGenerativeAIAbortError，由 LlmDelegator 统一重试，无需额外关闭 SDK 重试。
      * @param {string} [baseUrl] - 自定义 baseUrl
-     * @returns {{baseUrl?: string, timeout?: number}|undefined} 请求选项，均未配置时为 undefined
+     * @returns {{baseUrl?: string, timeout?: number, customHeaders?: Object}|undefined} 请求选项，均未配置时为 undefined
      */
     buildGeminiRequestOptions(baseUrl) {
         const requestTimeout = this.resolveRequestTimeout()
@@ -201,7 +202,25 @@ export class GeminiClient extends AbstractClient {
         const convertedTools = this.tools.map(toolConvert).filter(Boolean)
         const choiceResolution = resolveToolChoice(options, convertedTools, 'gemini')
         const tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
-        const toolConfig = tools ? normalizeGeminiToolConfig(choiceResolution.toolConfig) : undefined
+        /*
+         * 官方 hosted search：Gemini 的 googleSearch 与 functionDeclarations 不能共存。
+         * 仅在显式开启 geminiReplaceTools 时替换现有函数工具，否则保持原工具列表。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        const useGoogleSearch =
+            hostedSearch?.enabled &&
+            hostedSearch.provider === 'gemini' &&
+            hostedSearch.tool &&
+            hostedSearch.replaceTools === true
+        let toolConfig = tools ? normalizeGeminiToolConfig(choiceResolution.toolConfig) : undefined
+        let geminiTools = tools ? [{ functionDeclarations: tools }] : undefined
+        if (useGoogleSearch) {
+            geminiTools = [hostedSearch.tool]
+            toolConfig = undefined
+            if (tools?.length) {
+                logger.info('[Gemini适配器] 已启用官方 google_search，本次请求不携带 function declarations')
+            }
+        }
         options._exposedTools = tools || []
 
         const generationConfig = {
@@ -220,7 +239,7 @@ export class GeminiClient extends AbstractClient {
                 model,
                 systemInstruction: systemInstruction || undefined,
                 safetySettings,
-                tools: tools ? [{ functionDeclarations: tools }] : undefined,
+                tools: geminiTools,
                 toolConfig,
                 generationConfig
             },
@@ -363,7 +382,25 @@ export class GeminiClient extends AbstractClient {
         const convertedTools = this.tools.map(toolConvert).filter(Boolean)
         const choiceResolution = resolveToolChoice(options, convertedTools, 'gemini')
         const tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
-        const toolConfig = tools ? normalizeGeminiToolConfig(choiceResolution.toolConfig) : undefined
+        /*
+         * 官方 hosted search：Gemini 的 googleSearch 与 functionDeclarations 不能共存。
+         * 仅在显式开启 geminiReplaceTools 时替换现有函数工具，否则保持原工具列表。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        const useGoogleSearch =
+            hostedSearch?.enabled &&
+            hostedSearch.provider === 'gemini' &&
+            hostedSearch.tool &&
+            hostedSearch.replaceTools === true
+        let toolConfig = tools ? normalizeGeminiToolConfig(choiceResolution.toolConfig) : undefined
+        let geminiTools = tools ? [{ functionDeclarations: tools }] : undefined
+        if (useGoogleSearch) {
+            geminiTools = [hostedSearch.tool]
+            toolConfig = undefined
+            if (tools?.length) {
+                logger.info('[Gemini适配器] 已启用官方 google_search，本次请求不携带 function declarations')
+            }
+        }
         options._exposedTools = tools || []
 
         const generationConfig = {
@@ -381,7 +418,7 @@ export class GeminiClient extends AbstractClient {
                 model,
                 systemInstruction: systemInstruction || undefined,
                 safetySettings,
-                tools: tools ? [{ functionDeclarations: tools }] : undefined,
+                tools: geminiTools,
                 toolConfig,
                 generationConfig
             },

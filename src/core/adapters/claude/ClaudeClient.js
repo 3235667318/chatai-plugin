@@ -11,7 +11,7 @@ import {
 } from '../AbstractClient.js'
 import { getFromChaiteConverter, getFromChaiteToolConverter, getIntoChaiteConverter } from '../../utils/converter.js'
 import './converter.js'
-import { resolveToolChoice } from '../tooling.js'
+import { mergeToolDefinitions, resolveToolChoice } from '../tooling.js'
 
 const logger = chatLogger
 
@@ -33,6 +33,56 @@ const DEFAULT_CLAUDE_MODEL = 'claude-3-5-sonnet-20241022'
 /**
  * Claude客户端实现
  */
+/**
+ * Anthropic 提示词缓存断点。
+ *
+ * 顶层 cache_control（automatic caching）只有 Anthropic 官方端点稳定支持；
+ * 实测部分中转（New API → CommandCode）会忽略顶层字段，只有内容块上的
+ * cache_control 才会真正写缓存。这里统一改用显式断点：
+ * tools 末项 → system 末块 → 最后一条消息的末块，共 3 个（Anthropic 上限 4 个）。
+ *
+ * 断点按前缀命中：tools+system 是稳定前缀，消息末块让多轮对话增量缓存。
+ *
+ * @param {Object} payload Claude Messages 请求体
+ */
+function applyClaudeCacheBreakpoints(payload) {
+    const cacheControl = { type: 'ephemeral' }
+
+    if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+        const lastTool = payload.tools[payload.tools.length - 1]
+        if (lastTool && typeof lastTool === 'object') {
+            lastTool.cache_control = { ...cacheControl }
+        }
+    }
+
+    if (typeof payload.system === 'string') {
+        if (payload.system.trim()) {
+            payload.system = [{ type: 'text', text: payload.system, cache_control: { ...cacheControl } }]
+        }
+    } else if (Array.isArray(payload.system) && payload.system.length > 0) {
+        const lastBlock = payload.system[payload.system.length - 1]
+        if (lastBlock && typeof lastBlock === 'object') {
+            lastBlock.cache_control = { ...cacheControl }
+        }
+    }
+
+    const lastMessage = Array.isArray(payload.messages) ? payload.messages[payload.messages.length - 1] : null
+    if (lastMessage) {
+        if (typeof lastMessage.content === 'string') {
+            if (lastMessage.content.trim()) {
+                lastMessage.content = [{ type: 'text', text: lastMessage.content, cache_control: { ...cacheControl } }]
+            }
+        } else if (Array.isArray(lastMessage.content) && lastMessage.content.length > 0) {
+            const lastBlock = lastMessage.content[lastMessage.content.length - 1]
+            if (lastBlock && typeof lastBlock === 'object') {
+                lastBlock.cache_control = { ...cacheControl }
+            }
+        }
+    }
+
+    return payload
+}
+
 function getClaudeThinkingConfig(options = {}, clientOptions = {}) {
     const enableReasoning = options.enableReasoning ?? clientOptions.enableReasoning ?? false
     if (!enableReasoning) return undefined
@@ -87,11 +137,17 @@ export class ClaudeClient extends AbstractClient {
         } else if (this.options?.customHeaders && Object.keys(this.options.customHeaders).length > 0) {
             clientOptions.defaultHeaders = this.options.customHeaders
         }
-        // 接通渠道 timeout.read，未配置时沿用 SDK 默认值
+        // 接通渠道 timeout.read 与 maxTimeout（取小），未配置时沿用 SDK 默认值
         const requestTimeout = this.resolveRequestTimeout()
         if (requestTimeout) {
             clientOptions.timeout = requestTimeout
         }
+        /*
+         * 关闭 SDK 内部重试：否则超时会先被 SDK 自身重试（默认 maxRetries=2），
+         * 单次尝试的墙上时间被放大为 timeout × (maxRetries + 1)，"最大超时"不成立。
+         * 重试节奏统一由 LlmDelegator 掌控，实现"超时即失败并继续重试"的语义。
+         */
+        clientOptions.maxRetries = 0
         const entries = Object.entries(endpointMap).filter(([, endpointPath]) => endpointPath)
 
         if (baseUrlClean && entries.length > 0) {
@@ -173,8 +229,16 @@ export class ClaudeClient extends AbstractClient {
         const toolConvert = getFromChaiteToolConverter('claude')
         const convertedTools = this.tools.map(toolConvert).filter(Boolean)
         const choiceResolution = resolveToolChoice(options, convertedTools, 'claude')
-        const tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
+        let tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
         options._exposedTools = tools || []
+        /*
+         * 官方 hosted search：Anthropic 的服务端 web_search 工具与普通 function tools
+         * 同处 tools 数组，由服务端执行并返回 web_search_tool_result 块。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        if (hostedSearch?.enabled && hostedSearch.provider === 'claude' && hostedSearch.tool) {
+            tools = mergeToolDefinitions(tools || [], [hostedSearch.tool])
+        }
 
         const requestPayload = {
             model,
@@ -182,7 +246,7 @@ export class ClaudeClient extends AbstractClient {
             system: systemPrompt || undefined,
             messages,
             tools,
-            tool_choice: tools ? choiceResolution.toolChoice : undefined
+            tool_choice: choiceResolution.tools.length > 0 ? choiceResolution.toolChoice : undefined
         }
         /* 禁用温度传递时 temperature 为 undefined，不写入以避免携带 */
         if (Number.isFinite(options.temperature)) {
@@ -190,6 +254,7 @@ export class ClaudeClient extends AbstractClient {
         }
         const thinking = getClaudeThinkingConfig(options, this.options)
         if (thinking) requestPayload.thinking = thinking
+        applyClaudeCacheBreakpoints(requestPayload)
 
         // 调用API
         const response = await client.messages.create(requestPayload)
@@ -298,8 +363,16 @@ export class ClaudeClient extends AbstractClient {
         const toolConvert = getFromChaiteToolConverter('claude')
         const convertedTools = this.tools.map(toolConvert).filter(Boolean)
         const choiceResolution = resolveToolChoice(options, convertedTools, 'claude')
-        const tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
+        let tools = choiceResolution.tools.length > 0 ? choiceResolution.tools : undefined
         options._exposedTools = tools || []
+        /*
+         * 官方 hosted search：Anthropic 的服务端 web_search 工具与普通 function tools
+         * 同处 tools 数组，由服务端执行并返回 web_search_tool_result 块。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        if (hostedSearch?.enabled && hostedSearch.provider === 'claude' && hostedSearch.tool) {
+            tools = mergeToolDefinitions(tools || [], [hostedSearch.tool])
+        }
 
         const requestPayload = {
             model,
@@ -307,7 +380,7 @@ export class ClaudeClient extends AbstractClient {
             system: systemPrompt || undefined,
             messages,
             tools,
-            tool_choice: tools ? choiceResolution.toolChoice : undefined,
+            tool_choice: choiceResolution.tools.length > 0 ? choiceResolution.toolChoice : undefined,
             stream: true
         }
         /* 禁用温度传递时 temperature 为 undefined，不写入以避免携带 */
@@ -316,6 +389,7 @@ export class ClaudeClient extends AbstractClient {
         }
         const thinking = getClaudeThinkingConfig(options, this.options)
         if (thinking) requestPayload.thinking = thinking
+        applyClaudeCacheBreakpoints(requestPayload)
 
         const stream = await client.messages.create(requestPayload)
 

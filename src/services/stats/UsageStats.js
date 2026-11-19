@@ -11,6 +11,7 @@ import { encode } from 'gpt-tokenizer'
 const STATS_KEY = 'chaite:usage_stats'
 const STATS_LIST_KEY = 'chaite:usage_list'
 const MAX_RECORDS = 10000 // 最多保留记录数
+const FILTER_INDEX_BATCH = 500 // 重建筛选索引时每批读取的记录数
 
 /**
  * 使用记录结构
@@ -48,6 +49,173 @@ class UsageStats {
         // 内存缓存最近的统计
         this.recentStats = []
         this.maxMemoryRecords = 100
+        // 筛选用轻量索引：与 Redis 列表下标一一对应（0 = 最新），只保存筛选字段
+        this._filterIndex = null
+        this._filterIndexBuilding = null
+        this._filterIndexWrites = 0
+        this._filterIndexBuiltAt = 0
+        // 索引最长存活时间：兜底外部直接改写 Redis（LSET/LREM 等）造成的字段过期
+        this.filterIndexMaxAgeMs = 10 * 60 * 1000
+        this.filterIndexWarmEnabled = true
+    }
+
+    /**
+     * 提取筛选所需的轻量字段（不含 request/response 正文）
+     * @param {Object|null} record
+     */
+    _toIndexEntry(record) {
+        if (!record || typeof record !== 'object') return null
+        return {
+            id: record.id,
+            timestamp: record.timestamp,
+            channelId: record.channelId,
+            model: record.model,
+            success: record.success,
+            source: record.source
+        }
+    }
+
+    _parseRaw(raw) {
+        try {
+            const record = typeof raw === 'string' ? JSON.parse(raw) : raw
+            return record && typeof record === 'object' ? record : null
+        } catch {
+            return null
+        }
+    }
+
+    /**
+     * 全量扫描一次 Redis 列表，重建筛选索引。并发调用共享同一次构建。
+     * 构建期间若有新记录写入，本次结果只返回给调用方、不缓存，下次查询再重建。
+     * @returns {Promise<{raw: string[], index: Array<Object|null>}>}
+     */
+    async _buildFilterIndex() {
+        if (this._filterIndexBuilding) return this._filterIndexBuilding
+        const writesBefore = this._filterIndexWrites
+        this._filterIndex = null
+        const task = (async () => {
+            // 分批读取并解析，批次之间让出事件循环，避免一次性解析几十 MB 卡住机器人收发消息
+            const raw = []
+            const index = []
+            for (let start = 0; start < MAX_RECORDS; start += FILTER_INDEX_BATCH) {
+                const stop = Math.min(start + FILTER_INDEX_BATCH, MAX_RECORDS) - 1
+                const chunk = await redisClient.lrange(STATS_LIST_KEY, start, stop)
+                const items = Array.isArray(chunk) ? chunk : []
+                for (const item of items) {
+                    raw.push(item)
+                    index.push(this._toIndexEntry(this._parseRaw(item)))
+                }
+                if (items.length < stop - start + 1) break
+                await new Promise(resolve => setImmediate(resolve))
+            }
+            if (writesBefore === this._filterIndexWrites && redisClient.isConnected !== false) {
+                this._filterIndex = index
+                this._filterIndexBuiltAt = Date.now()
+            }
+            return { raw, index }
+        })()
+        this._filterIndexBuilding = task
+        try {
+            return await task
+        } finally {
+            this._filterIndexBuilding = null
+        }
+    }
+
+    /**
+     * 后台预热筛选索引（打开调用记录页时调用），让用户第一次切换筛选就走索引。
+     */
+    warmFilterIndex() {
+        if (!this.filterIndexWarmEnabled || this._filterIndexBuilding) return
+        if (this._filterIndex && Date.now() - this._filterIndexBuiltAt < this.filterIndexMaxAgeMs) return
+        setTimeout(() => {
+            this._buildFilterIndex().catch(error => {
+                logger.debug('[UsageStats] 预热筛选索引失败:', error.message)
+            })
+        }, 0)
+    }
+
+    /**
+     * 按索引下标从 Redis 取完整记录，并校验 id 与索引一致。
+     * 连续下标合并为一次 LRANGE。任何不一致返回 null（索引已过期）。
+     * @param {number[]} positions - 升序下标
+     * @param {Array<Object|null>} index
+     */
+    async _fetchIndexedRecords(positions, index) {
+        const wanted = positions.length > 0 && positions[0] === 0 ? positions : [0, ...positions]
+        const runs = []
+        for (const position of wanted) {
+            const last = runs[runs.length - 1]
+            if (last && position === last.end + 1) last.end = position
+            else runs.push({ start: position, end: position })
+        }
+        const chunks = await Promise.all(runs.map(run => redisClient.lrange(STATS_LIST_KEY, run.start, run.end)))
+        const byPosition = new Map()
+        runs.forEach((run, runIndex) => {
+            const chunk = Array.isArray(chunks[runIndex]) ? chunks[runIndex] : []
+            for (let position = run.start; position <= run.end; position++) {
+                byPosition.set(position, chunk[position - run.start])
+            }
+        })
+
+        // 头部校验：最新一条必须与索引一致（发现其他进程写入、清空等）
+        const head = this._parseRaw(byPosition.get(0))
+        const expectedHead = index[0] || null
+        if ((head?.id ?? null) !== (expectedHead?.id ?? null)) return null
+
+        const records = []
+        for (const position of positions) {
+            const record = this._parseRaw(byPosition.get(position))
+            if (!record || record.id !== index[position]?.id) return null
+            records.push(record)
+        }
+        return records
+    }
+
+    /**
+     * 带筛选的分页查询：在内存索引上筛选，只从 Redis 取当前页完整记录。
+     * Redis 列表为空且内存缓存有数据时返回 null，由调用方回退到内存缓存。
+     * @param {(record: Object) => boolean} matches
+     * @param {number} start
+     * @param {number} limit
+     * @returns {Promise<{records: Object[], total: number}|null>}
+     */
+    async _queryFiltered(matches, start, limit) {
+        const select = index => {
+            const positions = []
+            for (let position = 0; position < index.length; position++) {
+                const entry = index[position]
+                if (entry && matches(entry)) positions.push(position)
+            }
+            return positions
+        }
+
+        // 快路径：索引已缓存且与 Redis 长度一致
+        let index = this._filterIndex
+        if (index && Date.now() - this._filterIndexBuiltAt >= this.filterIndexMaxAgeMs) {
+            this._filterIndex = null
+            index = null
+        }
+        if (index) {
+            // 索引只覆盖前 MAX_RECORDS 条（与原先全量读取的窗口一致），LTRIM 之前列表可能短暂多出几条
+            const length = Math.min(Number(await redisClient.llen(STATS_LIST_KEY)), MAX_RECORDS)
+            if (length === index.length && length > 0) {
+                const positions = select(index)
+                const records = await this._fetchIndexedRecords(positions.slice(start, start + limit), index)
+                if (records) return { total: positions.length, records }
+            }
+            // 索引过期（其他进程写入、清空等），丢弃后重建
+            if (this._filterIndex === index) this._filterIndex = null
+        }
+
+        // 慢路径：全量扫描一次并重建索引，本次直接用扫描到的原文
+        const built = await this._buildFilterIndex()
+        if (built.index.length === 0 && this.recentStats.length > 0) return null
+        const positions = select(built.index)
+        return {
+            total: positions.length,
+            records: positions.slice(start, start + limit).map(p => this._parseRaw(built.raw[p]))
+        }
     }
 
     async init() {
@@ -236,8 +404,6 @@ class UsageStats {
             isEstimated: record.isEstimated || false, // 标记是否为估算值
             // 记录原始请求（限制大小）
             request: record.request ? this.truncateRequest(record.request) : null,
-            // 响应文本（截断；记忆总结等场景用于排查）
-            responseText: record.responseText ? String(record.responseText).slice(0, 500) : null,
             // 仅失败时记录响应
             response: !isSuccess && record.response ? this.truncateResponse(record.response) : null
         }
@@ -259,7 +425,15 @@ class UsageStats {
 
         // 保存到Redis
         try {
-            await redisClient.lpush(STATS_LIST_KEY, JSON.stringify(fullRecord))
+            this._filterIndexWrites++
+            const pushed = await redisClient.lpush(STATS_LIST_KEY, JSON.stringify(fullRecord))
+            // 同步更新筛选索引（与 Redis 的 LPUSH + LTRIM 保持同样的顺序和长度）
+            if (this._filterIndex && pushed > 0) {
+                this._filterIndex.unshift(this._toIndexEntry(fullRecord))
+                if (this._filterIndex.length > MAX_RECORDS) this._filterIndex.length = MAX_RECORDS
+            } else {
+                this._filterIndex = null
+            }
             await redisClient.ltrim(STATS_LIST_KEY, 0, MAX_RECORDS - 1)
 
             // 更新汇总统计
@@ -312,61 +486,155 @@ class UsageStats {
     }
 
     /**
-     * 获取最近的使用记录
+     * 获取最近的使用记录（筛选后取第一页）
      * @param {number} limit
      * @param {Object} filter
      */
     async getRecent(limit = 50, filter = {}) {
-        let records = []
+        const result = await this.getRecentPaged(1, limit, filter)
+        return result.records
+    }
 
-        try {
-            const rawRecords = await redisClient.lrange(STATS_LIST_KEY, 0, limit * 2)
-            records = rawRecords
-                .map(r => {
+    /**
+     * 获取使用记录分页结果。
+     * 无筛选时只读取 Redis 当前页，带筛选时读取最多 MAX_RECORDS 条后再筛选，
+     * 避免来源、状态、时间筛选只作用于未筛选的前几条记录。
+     * @param {number|Object} pageOrOptions - 页码，或 { page, limit, filter }
+     * @param {number} limitArg - 每页数量
+     * @param {Object} filterArg - 筛选条件
+     * @returns {Promise<{records: UsageRecord[], pagination: Object}>}
+     */
+    async getRecentPaged(pageOrOptions = 1, limitArg = 100, filterArg = {}) {
+        let pageValue = pageOrOptions
+        let limitValue = limitArg
+        let filter = filterArg
+
+        if (pageOrOptions && typeof pageOrOptions === 'object' && !Array.isArray(pageOrOptions)) {
+            const { page, limit, filter: optionFilter, ...filterOptions } = pageOrOptions
+            pageValue = page
+            limitValue = limit
+            filter = optionFilter || filterOptions
+        }
+
+        const pageNumber = Number(pageValue)
+        const limitNumber = Number(limitValue)
+        const page = Number.isFinite(pageNumber) && pageNumber >= 1 ? Math.floor(pageNumber) : 1
+        const limit =
+            Number.isFinite(limitNumber) && limitNumber >= 1 ? Math.min(Math.floor(limitNumber), MAX_RECORDS) : 100
+        const safeFilter = filter && typeof filter === 'object' ? filter : {}
+        const hasValue = value => value !== undefined && value !== null && value !== ''
+        const parseTime = value => {
+            if (!hasValue(value) || (typeof value === 'string' && value.trim() === '')) return undefined
+            const numeric = Number(value)
+            return Number.isFinite(numeric) ? numeric : undefined
+        }
+        const startTime = parseTime(safeFilter.startTime)
+        const endTime = parseTime(safeFilter.endTime)
+        const hasFilters =
+            ['channelId', 'model', 'success', 'source'].some(key => hasValue(safeFilter[key])) ||
+            startTime !== undefined ||
+            endTime !== undefined
+        const parseRecords = rawRecords =>
+            (Array.isArray(rawRecords) ? rawRecords : [])
+                .map(raw => {
                     try {
-                        return JSON.parse(r)
+                        return typeof raw === 'string' ? JSON.parse(raw) : raw
                     } catch {
                         return null
                     }
                 })
-                .filter(Boolean)
-        } catch {
-            records = [...this.recentStats]
-        }
-
-        // 应用过滤器
-        if (filter.channelId) {
-            records = records.filter(r => r.channelId === filter.channelId)
-        }
-        if (filter.model) {
-            records = records.filter(r => r.model === filter.model)
-        }
-        if (filter.success !== undefined) {
-            records = records.filter(r => r.success === filter.success)
-        }
-        if (filter.source) {
-            const sourceAliases = {
-                memory_group: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                memory_user: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                memory_extract: ['memory_extract', '记忆提取'],
-                群记忆: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                群记忆总结: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                用户记忆: ['memory_user', '记忆总结', '用户记忆'],
-                记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                个人记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                记忆提取: ['memory_extract', '记忆提取']
+                .filter(record => record && typeof record === 'object')
+        const applyFilters = input => {
+            let records = input
+            if (hasValue(safeFilter.channelId)) {
+                records = records.filter(record => record.channelId === safeFilter.channelId)
             }
-            const allowedSources = sourceAliases[filter.source] || [filter.source]
-            records = records.filter(r => allowedSources.includes(r.source))
-        }
-        if (filter.startTime) {
-            records = records.filter(r => r.timestamp >= filter.startTime)
-        }
-        if (filter.endTime) {
-            records = records.filter(r => r.timestamp <= filter.endTime)
+            if (hasValue(safeFilter.model)) {
+                records = records.filter(record => record.model === safeFilter.model)
+            }
+            if (safeFilter.success !== undefined && safeFilter.success !== null && safeFilter.success !== '') {
+                records = records.filter(record => record.success === safeFilter.success)
+            }
+            if (hasValue(safeFilter.source)) {
+                const sourceAliases = {
+                    memory_group: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                    memory_user: ['memory_user', '记忆总结', '用户记忆'],
+                    memory_extract: ['memory_extract', '记忆提取'],
+                    群记忆: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                    群记忆总结: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
+                    用户记忆: ['memory_user', '记忆总结', '用户记忆'],
+                    记忆总结: ['memory_user', '记忆总结', '用户记忆'],
+                    记忆提取: ['memory_extract', '记忆提取']
+                }
+                const allowedSources = sourceAliases[safeFilter.source] || [safeFilter.source]
+                records = records.filter(record => allowedSources.includes(record.source))
+            }
+            if (startTime !== undefined) {
+                records = records.filter(record => record.timestamp >= startTime)
+            }
+            if (endTime !== undefined) {
+                records = records.filter(record => record.timestamp <= endTime)
+            }
+            return records
         }
 
-        return records.slice(0, limit)
+        const start = (page - 1) * limit
+        let records
+        let total
+        try {
+            if (!hasFilters) {
+                this.warmFilterIndex()
+                total = Number(await redisClient.llen(STATS_LIST_KEY))
+                if (!Number.isFinite(total) || total < 0) throw new Error('Redis返回了无效的记录总数')
+                const rawRecords =
+                    total > start ? await redisClient.lrange(STATS_LIST_KEY, start, start + limit - 1) : []
+                records = parseRecords(rawRecords)
+                if (redisClient.isConnected === false && total > start && rawRecords.length === 0) {
+                    records = applyFilters([...this.recentStats])
+                    total = records.length
+                    records = records.slice(start, start + limit)
+                } else if (records.length < rawRecords.length) {
+                    // 当前页存在坏记录时，扩大读取窗口以重新统计有效记录总数。
+                    const allRawRecords = await redisClient.lrange(STATS_LIST_KEY, 0, MAX_RECORDS - 1)
+                    const validRecords = parseRecords(allRawRecords)
+                    total = validRecords.length
+                    records = validRecords.slice(start, start + limit)
+                } else if (total === 0 && this.recentStats.length > 0) {
+                    records = applyFilters([...this.recentStats])
+                    total = records.length
+                    records = records.slice(start, start + limit)
+                }
+            } else {
+                // 在内存轻量索引上筛选，只从 Redis 取当前页的完整记录
+                const matches = entry => applyFilters([entry]).length > 0
+                const result = await this._queryFiltered(matches, start, limit)
+                if (result) {
+                    total = result.total
+                    records = result.records
+                } else {
+                    records = applyFilters([...this.recentStats])
+                    total = records.length
+                    records = records.slice(start, start + limit)
+                }
+            }
+        } catch (error) {
+            logger.debug('[UsageStats] 分页读取Redis失败，改用内存缓存:', error.message)
+            records = applyFilters([...this.recentStats])
+            total = records.length
+            records = records.slice(start, start + limit)
+        }
+
+        const totalPages = total > 0 ? Math.ceil(total / limit) : 0
+        return {
+            records,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages,
+                hasMore: page < totalPages
+            }
+        }
     }
 
     /**
@@ -610,6 +878,8 @@ class UsageStats {
      */
     async clear() {
         this.recentStats = []
+        this._filterIndex = null
+        this._filterIndexWrites++
         let deletedCount = 0
         let listLen = 0
         try {

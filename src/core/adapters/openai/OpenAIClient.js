@@ -1,3 +1,4 @@
+import config from '../../../../config/config.js'
 import { chatLogger } from '../../utils/logger.js'
 const logger = chatLogger
 import OpenAI from 'openai'
@@ -51,7 +52,7 @@ const RESPONSES_EXTRA_PARAM_KEYS = [
     'truncation',
     'user'
 ]
-const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+const OPENAI_REASONING_EFFORTS = new Set(['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 const RESPONSES_EXECUTABLE_ITEM_TYPES = new Set(['function_call', 'custom_tool_call', 'local_shell_call', 'shell_call'])
 
 function mergeResponseTools(functionTools = [], openaiResponses = {}) {
@@ -419,8 +420,7 @@ function shouldAttachVendorThinkingType(control, baseUrl) {
         u.includes('open.bigmodel') ||
         u.includes('zhipu') ||
         u.includes('glm') ||
-        u.includes('maas') ||
-        u.includes('deepseek')
+        u.includes('maas')
     )
 }
 
@@ -488,11 +488,17 @@ export class OpenAIClient extends AbstractClient {
         if (this.baseUrl) {
             clientOptions.baseURL = this.baseUrl
         }
-        // 接通渠道 timeout.read，未配置时沿用 SDK 默认值
+        // 接通渠道 timeout.read 与 maxTimeout（取小），未配置时沿用 SDK 默认值
         const requestTimeout = this.resolveRequestTimeout()
         if (requestTimeout) {
             clientOptions.timeout = requestTimeout
         }
+        /*
+         * 关闭 SDK 内部重试：否则超时会先被 SDK 自身重试（默认 maxRetries=2），
+         * 单次尝试的墙上时间被放大为 timeout × (maxRetries + 1)，"最大超时"不成立。
+         * 重试节奏统一由 LlmDelegator 掌控，实现"超时即失败并继续重试"的语义。
+         */
+        clientOptions.maxRetries = 0
         if (channelProxy) {
             clientOptions.httpAgent = channelProxy
             logger.debug('[OpenAI适配器] 使用代理:', proxyService.getProfileForScope('channel')?.name)
@@ -545,17 +551,20 @@ export class OpenAIClient extends AbstractClient {
         return this.buildOpenAIClientOptions(apiKey, mergedHeaders, channelProxy, this.getOpenAIResponsePath())
     }
 
-    openAIMessageContentToResponseInputContent(content) {
+    openAIMessageContentToResponseInputContent(content, role = 'user') {
+        // Responses 历史中的 assistant 文本属于输出，不能使用 input_text。
+        const textType = role === 'assistant' ? 'output_text' : 'input_text'
         if (typeof content === 'string') {
-            return [{ type: 'input_text', text: content }]
+            return [{ type: textType, text: content }]
         }
         if (!Array.isArray(content)) {
-            return [{ type: 'input_text', text: content ? String(content) : '' }]
+            return [{ type: textType, text: content ? String(content) : '' }]
         }
         return content
             .map(item => {
                 if (!item || typeof item !== 'object') return null
-                if (item.type === 'text') return { type: 'input_text', text: item.text || '' }
+                if (item.type === 'text' || (role === 'assistant' && item.type === 'input_text'))
+                    return { type: textType, text: item.text || '' }
                 if (item.type === 'image_url')
                     return { type: 'input_image', image_url: item.image_url?.url || item.url || '' }
                 if (item.type === 'input_audio') return { type: 'input_audio', input_audio: item.input_audio }
@@ -592,7 +601,7 @@ export class OpenAIClient extends AbstractClient {
                 items.push({
                     type: 'message',
                     role: message.role === 'developer' ? 'system' : message.role,
-                    content: this.openAIMessageContentToResponseInputContent(message.content)
+                    content: this.openAIMessageContentToResponseInputContent(message.content, message.role)
                 })
             }
 
@@ -1574,6 +1583,14 @@ export class OpenAIClient extends AbstractClient {
             : useResponsesApi
               ? mergeResponseTools(choiceResolution.tools, openaiResponses)
               : choiceResolution.tools
+        /*
+         * 官方 hosted search 只在 Responses 接口可用。
+         * 由 LlmService 依当前渠道解析，第三方中转站与非官方域名不会走到这里。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        if (useResponsesApi && !choiceResolution.disabled && hostedSearch?.enabled && hostedSearch.tool) {
+            tools = mergeToolDefinitions(tools, [hostedSearch.tool])
+        }
         let toolChoice = choiceResolution.toolChoice
 
         // Gemini API 要求 enum 值必须是字符串类型，清理所有工具定义
@@ -1623,6 +1640,18 @@ export class OpenAIClient extends AbstractClient {
         } else {
             requestPayload.max_tokens = options.maxToken
         }
+
+        // 关闭推理：部分网关（如 Command Code）需要显式 reasoning_effort=off，否则模型仍会思考
+        try {
+            const offEffort = config.get('thinking.disabledReasoningEffort')
+            if (!enableReasoning && offEffort && !requestPayload.reasoning_effort) {
+                requestPayload.reasoning_effort = String(offEffort)
+                if (requestPayload.max_tokens !== undefined && requestPayload.max_completion_tokens === undefined) {
+                    requestPayload.max_completion_tokens = requestPayload.max_tokens
+                    delete requestPayload.max_tokens
+                }
+            }
+        } catch {}
 
         // Remove undefined/null values to prevent API errors
         Object.keys(requestPayload).forEach(key => {
@@ -2034,11 +2063,19 @@ export class OpenAIClient extends AbstractClient {
             convertedTools,
             useResponsesApi ? 'openai-responses' : 'openai-chat'
         )
-        const tools = choiceResolution.disabled
+        let tools = choiceResolution.disabled
             ? []
             : useResponsesApi
               ? mergeResponseTools(choiceResolution.tools, openaiResponses)
               : choiceResolution.tools
+        /*
+         * 官方 hosted search 只在 Responses 接口可用。
+         * 由 LlmService 依当前渠道解析，第三方中转站与非官方域名不会走到这里。
+         */
+        const hostedSearch = this.options?.nativeSearch
+        if (useResponsesApi && !choiceResolution.disabled && hostedSearch?.enabled && hostedSearch.tool) {
+            tools = mergeToolDefinitions(tools, [hostedSearch.tool])
+        }
         let toolChoice = choiceResolution.toolChoice
         options._exposedTools = tools
 
@@ -2080,6 +2117,18 @@ export class OpenAIClient extends AbstractClient {
         } else {
             requestPayload.max_tokens = options.maxToken
         }
+
+        // 关闭推理：部分网关（如 Command Code）需要显式 reasoning_effort=off，否则模型仍会思考
+        try {
+            const offEffort = config.get('thinking.disabledReasoningEffort')
+            if (!enableReasoning && offEffort && !requestPayload.reasoning_effort) {
+                requestPayload.reasoning_effort = String(offEffort)
+                if (requestPayload.max_tokens !== undefined && requestPayload.max_completion_tokens === undefined) {
+                    requestPayload.max_completion_tokens = requestPayload.max_tokens
+                    delete requestPayload.max_tokens
+                }
+            }
+        } catch {}
 
         // Remove undefined/null values to prevent API errors
         Object.keys(requestPayload).forEach(key => {

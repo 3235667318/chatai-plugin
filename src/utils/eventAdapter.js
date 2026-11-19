@@ -259,20 +259,30 @@ export function parseBanEvent(e) {
     // 操作者
     const operatorId = e.operator_id || e.admin_id
 
-    // 禁言时长(秒)，0 表示解禁
-    const duration = e.duration || e.time || 0
+    // 禁言时长(秒)：只认 duration 字段；e.time 是事件时间戳，不能当时长用
+    const subType = e.sub_type || ''
+    const rawDuration = Number(e.duration ?? e.duration_seconds ?? NaN)
+    let duration = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : null
+
+    // 没有 duration 时，尝试用到期时间换算
+    if (duration === null) {
+        const expire = Number(e.expire_time ?? NaN)
+        if (Number.isFinite(expire) && expire > 0) {
+            duration = Math.max(0, expire - Math.floor(Date.now() / 1000))
+        }
+    }
 
     // 是否解禁
-    const isLift = duration === 0 || e.sub_type === 'lift_ban' || e.sub_type === 'unban'
+    const isLift = subType === 'lift_ban' || subType === 'unban' || duration === 0
 
     return {
         userId,
         operatorId,
-        duration,
+        duration: duration === null ? 0 : duration,
         isLift,
         groupId: e.group_id,
         // 格式化时长文本
-        durationText: isLift ? '解除禁言' : formatDuration(duration)
+        durationText: isLift ? '解除禁言' : duration === null ? '未知时长' : formatDuration(duration)
     }
 }
 
@@ -408,7 +418,11 @@ export async function getOriginalMessage(e, bot = null, messageCache = null) {
             if (parsed.content) return parsed
         }
         const api = new StandardBotApi({ event: e, bot: bot || e?.bot || globalThis.Bot })
-        const message = await api.getMessage(messageId, { groupId: e.group_id, userId: e.user_id })
+        const message = await api.getMessage(
+            messageId,
+            /* 群聊事件同时带 group_id 与 user_id，StandardBotApi 不允许两者并存，只取群目标 */
+            e.group_id ? { groupId: e.group_id } : { userId: e.user_id }
+        )
         const parsed = parseMessageContent(message?.message || message?.raw_message)
         if (parsed.content) return parsed
     } catch (error) {

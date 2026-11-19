@@ -6,6 +6,7 @@ import { chatLogger } from '../../core/utils/logger.js'
 import config from '../../../config/config.js'
 import { memoryService } from './MemoryService.js'
 import { callMemoryLLM, formatMemoryTime } from './llmHelper.js'
+import { memoryLlmScheduler } from './MemoryLlmScheduler.js'
 import { MemoryCategory, MemorySource, getCategoryLabel, isValidCategory } from './MemoryTypes.js'
 import { preserveTargetId } from '../../core/platform/StandardBotIdentity.js'
 
@@ -192,42 +193,6 @@ export function parseMemorySummaryResponse(response) {
         // 明显是 XML 记忆文档却拆不出合法条目：宁可整轮作废，
         // 也不让 XML 标签文本经回退通道混进记忆库
         return []
-    }
-
-    // 先尝试从带思考过程的输出里抠出 JSON（数组或 {memories|topics|relations:[...]}）
-    const jsonPayload = (() => {
-        const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
-        const candidates = []
-        if (fence) candidates.push(fence[1])
-        const arr = text.match(/\[[\s\S]*\]/)
-        if (arr) candidates.push(arr[0])
-        const obj = text.match(/\{[\s\S]*\}/)
-        if (obj) candidates.push(obj[0])
-        for (const c of candidates) {
-            try {
-                const parsed = JSON.parse(c)
-                if (Array.isArray(parsed)) {
-                    const items = parsed.map(x => (typeof x === 'string' ? x : x?.content || x?.text || x?.memory)).filter(Boolean)
-                    if (items.length) return items
-                } else if (parsed && typeof parsed === 'object') {
-                    for (const key of ['memories', 'topics', 'relations', 'items', 'data']) {
-                        if (Array.isArray(parsed[key])) {
-                            const items = parsed[key]
-                                .map(x => (typeof x === 'string' ? x : x?.content || x?.text || x?.memory))
-                                .filter(Boolean)
-                            if (items.length) return items
-                        }
-                    }
-                }
-            } catch {}
-        }
-        return null
-    })()
-    if (jsonPayload && jsonPayload.length) {
-        const cleaned = jsonPayload
-            .map(x => String(x).trim())
-            .filter(x => x && !/^(Final|Need|Let me|I |The |Consider|Wait|Okay|Sure|Output|We )/i.test(x))
-        if (cleaned.length) return [...new Set(cleaned)]
     }
 
     let lines = text.split(/\r?\n/)
@@ -726,6 +691,38 @@ class MemorySummarizer {
             graphExtracted: false
         }
 
+        /*
+         * 频率闸门。
+         *
+         * ChatAgent 每条回复都会调用本方法，图谱提取（2 次 LLM）与记忆总结（每分类 1 次）
+         * 不应按回复频率执行。仅在需要 summary 时按作用域做冷却 + 新消息水位判定：
+         * - 冷却未到：直接跳过，不发任何 LLM；
+         * - 新消息不足：同样跳过，等后续回复累计。
+         * 判定与 markProcessed 都在首个 await 之前同步完成，避免并发回复同时通过。
+         */
+        if (summarize) {
+            const scopeKey =
+                groupId === null || groupId === undefined || groupId === ''
+                    ? `user:${userId}`
+                    : `group:${groupId}:user:${userId}`
+            memoryLlmScheduler.noteMessage(scopeKey)
+            const gate = memoryLlmScheduler.checkGate(scopeKey)
+            if (!gate.allowed) {
+                logger.debug(
+                    `[MemorySummarizer] 跳过对话结束总结(${gate.reason}): scope=${scopeKey}, ` +
+                        `待处理消息=${gate.messageCount}/${gate.minMessages}`
+                )
+                return {
+                    ...result,
+                    skipped: true,
+                    reason: gate.reason,
+                    retryAfterSeconds: gate.retryAfterSeconds,
+                    messageCount: gate.messageCount
+                }
+            }
+            memoryLlmScheduler.markProcessed(scopeKey)
+        }
+
         try {
             // 优先动态解析 LLM 客户端，避免依赖外部注入的空客户端导致自动提取失效
             let llmClient = this.llmClient
@@ -737,9 +734,8 @@ class MemorySummarizer {
                 }
             }
 
-            // 图谱提取需要 3 条以上消息；且要显式开启（默认关，避免每次总结白跑 2 次 LLM）
-            const graphEnabled = config.get('memory.knowledgeGraphExtraction') === true
-            const graphReady = graphEnabled && Array.isArray(messages) && messages.length >= 3
+            // 图谱提取需要 3 条以上消息，对话才刚起步时跳过，避免每轮空跑
+            const graphReady = Array.isArray(messages) && messages.length >= 3
             if (graphReady) {
                 try {
                     const { knowledgeGraphExtractor } = await import('../storage/KnowledgeGraphExtractor.js')

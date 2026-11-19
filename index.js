@@ -6,6 +6,7 @@ import { chatLogger, c, icons } from './src/core/utils/logger.js'
 import { telemetryService } from './src/services/telemetry/index.js'
 import { getFullVersionInfo } from './src/utils/version.js'
 import { registerQQBotMessageCache } from './src/services/storage/MessageCache.js'
+import { registerGroupMessageFeed } from './src/services/context/GroupMessageFeed.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -36,6 +37,23 @@ if (!fs.existsSync(dataDir)) {
 config.startSync(dataDir)
 global.chatgptPluginConfig = config
 registerQQBotMessageCache()
+registerGroupMessageFeed()
+
+// 启动即初始化 Redis 并等待就绪。
+// 调用统计/历史直接从 Redis 读取，之前只有首次聊天（ChannelManager.init）才建立连接，
+// 因此每次重启后到首条消息前，面板统计一律显示 0（内存缓存为空）。
+try {
+    const { redisClient } = await import('./src/core/cache/RedisClient.js')
+    await redisClient.init()
+    const redisReady = await redisClient.waitForReady(3000)
+    if (redisReady) {
+        chatLogger.info('Redis', '启动时已连接，调用统计可直接读取历史数据')
+    } else if (config.get('redis.enabled')) {
+        chatLogger.warn('Redis', '启动时 Redis 未就绪，统计将暂时回落到内存缓存')
+    }
+} catch (err) {
+    chatLogger.warn('Redis', '启动时初始化失败:', err.message)
+}
 try {
     global._yunzaiCfgCache = (await import('../../lib/config/config.js')).default
 } catch {
@@ -166,15 +184,7 @@ const appsPromise = (async () => {
         })
     )
 })()
-const raceTimeout = (p, ms) =>
-    Promise.race([
-        p,
-        new Promise(resolve => setTimeout(() => resolve({ name: 'Timeout', status: 'warn', error: `超过 ${ms}ms` }), ms))
-    ])
-const [appsResults, ...initResults] = await Promise.all([
-    appsPromise,
-    ...initTasks.map(t => raceTimeout(t, 15000))
-])
+const [appsResults, ...initResults] = await Promise.all([appsPromise, ...initTasks])
 if (Array.isArray(appsResults)) {
     for (const result of appsResults) {
         if (result.status === 'fulfilled') {
