@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>前情消息 · ChatAI</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:24px; font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; background:#0f1115; color:#e6e8ee; }
+  @media (prefers-color-scheme: light){ body{ background:#f5f6f8; color:#1c1f26; } .card{ background:#fff; border-color:#e3e6ec; } }
+  .wrap { max-width:680px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  .sub { opacity:.7; margin:0 0 20px; font-size:13px; }
+  .card { background:#171a21; border:1px solid #2a2f3a; border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0; }
+  .row + .row { border-top:1px dashed rgba(128,128,128,.25); }
+  .label { font-weight:500; }
+  .hint { font-size:12px; opacity:.6; margin-top:4px; }
+  input[type=number] { width:120px; padding:6px 10px; border-radius:8px; border:1px solid rgba(128,128,128,.35); background:transparent; color:inherit; }
+  .switch { position:relative; width:46px; height:26px; flex:none; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; inset:0; background:rgba(128,128,128,.35); border-radius:999px; transition:.2s; cursor:pointer; }
+  .slider::before { content:""; position:absolute; width:20px; height:20px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
+  .switch input:checked + .slider { background:#5b8cff; }
+  .switch input:checked + .slider::before { transform:translateX(20px); }
+  button { padding:9px 18px; border-radius:9px; border:1px solid rgba(128,128,128,.35); background:#5b8cff; color:#fff; cursor:pointer; font-size:14px; }
+  button.secondary { background:transparent; color:inherit; }
+  .actions { display:flex; align-items:center; gap:10px; }
+  .status { font-size:13px; opacity:.75; min-height:20px; }
+  a.back { font-size:13px; opacity:.7; text-decoration:none; color:inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>前情消息</h1>
+  <p class="sub">触发机器人时，把触发消息之前的群聊记录一起交给模型（只用于本轮，不写入历史；会压成摘要存入历史）。</p>
+
+  <div class="card">
+    <div class="row">
+      <div><div class="label">启用前情消息</div><div class="hint">关闭后只把触发它的那条消息交给模型</div></div>
+      <label class="switch"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <div><div class="label">携带消息数量</div><div class="hint">触发消息之前的最近多少条，1–50</div></div>
+      <input type="number" id="count" min="1" max="50" step="1" />
+    </div>
+    <div class="row">
+      <div><div class="label">时间窗口（分钟）</div><div class="hint">只取这段时间以内的消息，1–1440</div></div>
+      <input type="number" id="maxMinutes" min="1" max="1440" step="1" />
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="actions">
+      <button id="save">保存</button>
+      <button id="reload" class="secondary">重新读取</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <a class="back" href="../settings/">← 返回设置</a>
+</div>
+
+<script>
+(function () {
+  var TOKEN_KEY = 'chatai_token'
+  var API = '/chatai/api/config/context'
+  function token() { return localStorage.getItem(TOKEN_KEY) || '' }
+  function q(id) { return document.getElementById(id) }
+  function setStatus(t, bad) {
+    var el = q('status')
+    el.textContent = t
+    el.style.color = bad ? '#ff6b6b' : ''
+  }
+  function load() {
+    fetch(API, { headers: { Authorization: 'Bearer ' + token() } })
+      .then(function (r) { return r.json() })
+      .then(function (j) {
+        if (!j || j.code !== 0) throw new Error((j && j.message) || '读取失败')
+        var c = (j.data && j.data.preTriggerMessages) || {}
+        window.__preCfg = c
+        q('enabled').checked = c.enabled === true
+        q('count').value = Number(c.count) > 0 ? Number(c.count) : 10
+        q('maxMinutes').value = Number(c.maxMinutes) > 0 ? Number(c.maxMinutes) : 30
+        setStatus('已读取')
+      })
+      .catch(function (e) { setStatus('读取失败：' + e.message, true) })
+  }
+  function save() {
+    var count = Math.max(1, Math.min(50, Number(q('count').value) || 10))
+    var maxMinutes = Math.max(1, Math.min(1440, Number(q('maxMinutes').value) || 30))
+    q('count').value = count
+    q('maxMinutes').value = maxMinutes
+    setStatus('保存中…')
+    fetch(API, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token() },
+      body: JSON.stringify({
+        preTriggerMessages: Object.assign({}, window.__preCfg || {}, {
+          enabled: q('enabled').checked,
+          count: count,
+          maxMinutes: maxMinutes
+        })
+      })
+    })
+      .then(function (r) { return r.json() })
+      .then(function (j) {
+        if (!j || j.code !== 0) throw new Error((j && j.message) || '保存失败')
+        setStatus('已保存')
+      })
+      .catch(function (e) { setStatus('保存失败：' + e.message, true) })
+  }
+  q('save').addEventListener('click', save)
+  q('reload').addEventListener('click', load)
+  load()
+})()
+</script>
+</body>
+</html>

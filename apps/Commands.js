@@ -11,7 +11,6 @@ import { renderService } from '../src/services/media/RenderService.js'
 import { channelManager } from '../src/services/llm/ChannelManager.js'
 import { presetManager } from '../src/services/preset/PresetManager.js'
 import { usageStats } from '../src/services/stats/UsageStats.js'
-import { redisClient } from '../src/core/cache/RedisClient.js'
 import { LlmService } from '../src/services/llm/LlmService.js'
 import { ensureScopeManager, isGroupFeatureEnabled, getGroupFeatureModel } from '../src/services/scope/ScopeManager.js'
 import { isMaster } from '../src/utils/platformAdapter.js'
@@ -149,20 +148,16 @@ export class AICommands extends plugin {
             priority: -100, // 最高优先级，确保命令不被其他插件抢占（数值越小优先级越高）
             rule: [
                 {
-                    reg: '^#?总结群记忆\\s*(\\d+)?$',
-                    fnc: 'summarizeGroupMemory'
-                },
-                {
-                    reg: '^#?拉取群历史\\s*(\\d+)?$',
-                    fnc: 'dumpGroupHistory'
-                },
-                {
                     reg: '^#工具模式(?:\\s+(ask|询问|auto|自动|confirm_all|全确认|yolo|直接执行))?$',
                     fnc: 'toolApprovalMode'
                 },
                 {
                     reg: '^#(结束对话|结束会话|新对话|新会话)$',
                     fnc: 'endConversation'
+                },
+                {
+                    reg: '^#?(用量|今日用量|用量统计|token用量|今日token)(\\s*\\d{1,2}(\\s*-\\s*\\d{1,2})?)?$',
+                    fnc: 'todayUsage'
                 },
                 {
                     reg: '^#(清除记忆|清理记忆|删除记忆)$',
@@ -207,10 +202,6 @@ export class AICommands extends plugin {
                 {
                     reg: '^#(总结记忆|记忆总结|整理记忆)$',
                     fnc: 'summarizeMemory'
-                },
-                {
-                    reg: '^#(今日用量|用量统计|token用量|今日token)$',
-                    fnc: 'todayUsage'
                 },
                 {
                     reg: '^#(今日词云|词云|群词云)$',
@@ -454,89 +445,120 @@ export class AICommands extends plugin {
         }
         return true
     }
-    /** #总结群记忆 [数量] */
-    async summarizeGroupMemory() {
-        if (!this.e.isGroup) return this.reply('仅群聊可用')
-        const m = String(this.e.msg || '').match(/(\d+)/)
-        const count = m ? parseInt(m[1]) : 300
-        await this.reply(`开始总结最近 ${count} 条聊天记录，请稍候…`)
+    /**
+     * #用量 [N | A-B]
+     * 不带参数看今天；用量5 看本月5号；用量1-5 看本月1至5号合计
+     */
+    async todayUsage() {
+        const e = this.e
         try {
-            const result = await memoryManager.summarizeGroupFromHistory(this.e.group_id, { count })
-            return this.reply(
-                `总结完成：${result.messageCount} 条记录\n话题 ${result.topics.length} 条，关系 ${result.relations.length} 条\n${result.summary || ''}`
-            )
-        } catch (err) {
-            return this.reply(`总结失败：${err.message}`)
-        }
-    }
+            // 非主人：完全静默，不返回任何提示
+            if (!(isMaster(e.user_id || e.sender?.user_id) || e.isMaster)) return true
 
-    /** 拉取群历史，写入 data/history_<群号>.json */
-    async dumpGroupHistory() {
-        if (!this.e.isGroup) return this.reply('仅群聊可用')
-        const fs = await import('node:fs')
-        const m = String(this.e.msg || '').match(/(\d+)/)
-        const want = Math.min(2000, Math.max(1, parseInt(m ? m[1] : '600') || 600))
-        const gid = this.e.group_id
+            const raw = String(e.msg || '')
+                .trim()
+                .replace(/^#/, '')
+            const m = raw.match(/(\d{1,2})(?:\s*-\s*(\d{1,2}))?\s*$/)
+            const now = new Date()
+            const year = now.getFullYear()
+            const month = now.getMonth()
 
-        const collected = []
-        const seen = new Set()
-        let seq = null
+            let rangeStart
+            let rangeEnd
+            let title
+            let includePeakLine = false
 
-        for (let i = 0; i < 80 && collected.length < want; i++) {
-            let res
+            if (!m) {
+                rangeStart = new Date(year, month, now.getDate(), 0, 0, 0, 0)
+                rangeEnd = new Date(rangeStart.getTime() + 24 * 60 * 60 * 1000)
+                title = '😡今日用量😡'
+                includePeakLine = true
+            } else {
+                const a = Number(m[1])
+                const b = m[2] ? Number(m[2]) : null
+                const invalid = !Number.isFinite(a) || a < 1 || a > 31 || (b !== null && (!Number.isFinite(b) || b < a || b > 31))
+                if (invalid) {
+                    await this.reply('日期格式不对，示例：用量1、用量5、用量1-5', true)
+                    return true
+                }
+                rangeStart = new Date(year, month, a, 0, 0, 0, 0)
+                rangeEnd = new Date(year, month, (b ?? a) + 1, 0, 0, 0, 0)
+                title = b === null ? `😡用量 ${month + 1}月${a}日😡` : `😡用量 ${month + 1}月${a}–${b}日😡`
+            }
+
+            await usageStats.init()
+            const records = await usageStats.getRecent(20000, { startTime: rangeStart.getTime() })
+            const list = (records || []).filter(r => r.timestamp >= rangeStart.getTime() && r.timestamp < rangeEnd.getTime())
+
+            // 搜索/抓取次数：按天累计 redis 计数
+            let searches = 0
             try {
-                res = await this.e.bot.sendApi('get_group_msg_history', {
-                    group_id: gid,
-                    count: want,
-                    ...(seq ? { message_seq: seq } : {})
-                })
-            } catch (err) {
-                return this.reply(`拉取失败：${err.message}`)
+                const { redisClient } = await import('../src/core/cache/RedisClient.js')
+                await redisClient.init?.()
+                for (let i = 0; i < 40 && !redisClient.isConnected; i++) await new Promise(r => setTimeout(r, 50))
+                const cursor = new Date(rangeStart.getTime())
+                while (cursor.getTime() < rangeEnd.getTime()) {
+                    const key = `chaite:tools_daily:${cursor.toLocaleDateString('sv-SE')}`
+                    const hash = await redisClient.hgetall(key)
+                    for (const [name, n] of Object.entries(hash || {})) {
+                        if (/search|wiki|baike|hot|fetch/i.test(name)) searches += Number(n) || 0
+                    }
+                    cursor.setDate(cursor.getDate() + 1)
+                }
+            } catch {}
+
+            if (list.length === 0 && searches === 0) {
+                await this.reply(`${title.replace(/😡/g, '')} 没有用量记录`, true)
+                return true
             }
-            const msgs = res?.data?.messages || res?.messages || []
-            if (i === 0 && msgs.length) {
-                try {
-                    (await import('node:fs')).writeFileSync(
-                        'data/history_sample.json',
-                        JSON.stringify(msgs[0], null, 2),
-                        'utf-8'
-                    )
-                } catch {}
+
+            const calls = list.length
+            const input = list.reduce((a, r) => a + (Number(r.inputTokens) || 0), 0)
+            const cache = list.reduce((a, r) => a + (Number(r.cacheReadTokens) || 0), 0)
+            const output = list.reduce((a, r) => a + (Number(r.outputTokens) || 0), 0)
+            const missTok = Math.max(0, input - cache)
+
+            const PRICES = {
+                flash: { miss: [1, 2], cache: [0.02, 0.04], out: [4, 8] },
+                pro: { miss: [4.5, 9], cache: [0.15, 0.3], out: [13.5, 27] }
             }
-            if (!msgs.length) break
-            let added = 0
-            for (const msg of msgs) {
-                const id = String(msg.message_id ?? msg.message_seq ?? '')
-                if (id && seen.has(id)) continue
-                if (id) seen.add(id)
-                collected.push(msg)
-                added++
+            const isPeakHour = timestamp => {
+                const d = new Date(timestamp)
+                const day = d.getDay()
+                if (day === 0 || day === 6) return false
+                const hour = d.getHours() + d.getMinutes() / 60
+                return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
             }
-            if (!added) break
-            const oldest = msgs[msgs.length - 1]
-            // NapCat 的 message_seq 参数实际用的是 real_seq
-            seq = oldest?.message_seq ?? oldest?.real_seq ?? oldest?.message_id ?? null
-            if (!seq) break
+            let cost = 0
+            for (const r of list) {
+                const name = String(r.model || '').toLowerCase()
+                const table = name.includes('pro') ? PRICES.pro : PRICES.flash
+                const idx = isPeakHour(r.timestamp) ? 1 : 0
+                const ci = Number(r.inputTokens) || 0
+                const cc = Number(r.cacheReadTokens) || 0
+                const co = Number(r.outputTokens) || 0
+                cost += (Math.max(0, ci - cc) * table.miss[idx] + cc * table.cache[idx] + co * table.out[idx]) / 1e6
+            }
+
+            const cachePct = ((cache / Math.max(1, input)) * 100).toFixed(0)
+            const fmtTok = n => String(Number(n) || 0).replace(/\B(?=(\d{4})+(?!\d))/g, ',')
+            const lines = [
+                title,
+                `调用次数：${calls}`,
+                `未命中缓存：${fmtTok(missTok)}`,
+                `命中缓存：${fmtTok(cache)}（${cachePct}%）`,
+                `总输入：${fmtTok(input)}`,
+                `输出：${fmtTok(output)}`,
+                `搜索：${searches}`,
+                `预估花费：${cost.toFixed(2)}`
+            ]
+            if (includePeakLine) lines.push(`当前时段：${isPeakHour(Date.now()) ? '梁文峰' : '梁文谷'}`)
+            await this.reply(lines.join('\n'), true)
+            return true
+        } catch (err) {
+            logger.error('[AI-Commands] 用量统计失败:', err.message)
+            return true
         }
-
-        const slim = collected.slice(-want).map(msg => {
-            const sender = msg.sender || {}
-            const text = Array.isArray(msg.message)
-                ? msg.message
-                      .filter(s => s.type === 'text')
-                      .map(s => s.data?.text || '')
-                      .join('')
-                : String(msg.raw_message || msg.message || '')
-            return {
-                time: Number(msg.time || 0),
-                user_id: String(msg.user_id ?? sender.user_id ?? ''),
-                nickname: sender.card || sender.nickname || String(msg.user_id ?? ''),
-                text: text.replace(/\s+/g, ' ').trim()
-            }
-        })
-
-        fs.writeFileSync(`data/history_${gid}.json`, JSON.stringify(slim, null, 2), 'utf-8')
-        return this.reply(`已拉取 ${slim.length} 条历史`)
     }
 
     async clearMemory() {
@@ -1976,106 +1998,6 @@ ${rawChatHistory}`
      * 今日词云分析
      * #今日词云 / #词云 / #群词云
      */
-    /**
-     * #今日用量 / #用量统计
-     * 汇总今天所有 API 调用、token、缓存命中、搜索次数与估算花费
-     */
-    async todayUsage() {
-        const e = this.e
-        try {
-            if (!(isMaster(e.user_id || e.sender?.user_id) || e.isMaster)) {
-                await this.reply('只有主人可以查看用量统计', true)
-                return true
-            }
-            await usageStats.init()
-            await redisClient.init()
-            // init 只是发起连接，等 ready 再读，否则 lrange 会直接返回空
-            for (let i = 0; i < 40 && !redisClient.isConnected; i++) {
-                await new Promise(r => setTimeout(r, 50))
-            }
-            const start = new Date()
-            start.setHours(0, 0, 0, 0)
-            const startTime = start.getTime()
-
-            const records = await usageStats.getRecent(10000, { startTime })
-            const today = records.filter(r => r.timestamp >= startTime)
-
-            const calls = today.length
-            const input = today.reduce((a, r) => a + (Number(r.inputTokens) || 0), 0)
-            const cache = today.reduce((a, r) => a + (Number(r.cacheReadTokens) || 0), 0)
-            const output = today.reduce((a, r) => a + (Number(r.outputTokens) || 0), 0)
-            const missTok = Math.max(0, input - cache)
-
-            // 搜索/抓取：DeepSeek Search/Fetch 按成功请求计费（¥5 / 1000 次）
-            let searches = 0
-            let fetches = 0
-            try {
-                const day = new Date().toLocaleDateString('sv-SE')
-                const hash = await redisClient.hgetall(`chaite:tools_daily:${day}`)
-                for (const [name, n] of Object.entries(hash || {})) {
-                    const count = Number(n) || 0
-                    if (/search|wiki|baike|hot/i.test(name)) searches += count
-                    else if (/fetch/i.test(name)) fetches += count
-                }
-            } catch {}
-
-            // DeepSeek 现行价格（元/百万 token）：[空闲时段, 高峰时段]
-            // 高峰：北京时间周一至周五 9:00-12:00、14:00-18:00；其余时间半价
-            const PRICES = {
-                flash: { miss: [1, 2], cache: [0.02, 0.04], out: [4, 8] },
-                pro: { miss: [4.5, 9], cache: [0.15, 0.3], out: [13.5, 27] }
-            }
-            const isPeakHour = timestamp => {
-                const d = new Date(timestamp)
-                const day = d.getDay()
-                if (day === 0 || day === 6) return false
-                const hour = d.getHours() + d.getMinutes() / 60
-                return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
-            }
-            const priceOf = (model, timestamp) => {
-                const name = String(model || '').toLowerCase()
-                const table = name.includes('pro') ? PRICES.pro : PRICES.flash
-                const idx = isPeakHour(timestamp) ? 1 : 0
-                return { miss: table.miss[idx], cache: table.cache[idx], out: table.out[idx] }
-            }
-
-            // 逐条按调用时刻的峰谷价与模型单价计算，reasoning 已包含在 outputTokens 内
-            let tokenCost = 0
-            for (const r of today) {
-                const p = priceOf(r.model, r.timestamp)
-                const cin = Number(r.inputTokens) || 0
-                const cch = Number(r.cacheReadTokens) || 0
-                const cout = Number(r.outputTokens) || 0
-                const cmiss = Math.max(0, cin - cch)
-                tokenCost += (cmiss * p.miss + cch * p.cache + cout * p.out) / 1_000_000
-            }
-            const toolCost = (searches + fetches) * 0.005
-            const cost = tokenCost + toolCost
-            const cachePct = input > 0 ? Math.round((cache / input) * 100) : 0
-
-            const nowPeak = isPeakHour(Date.now())
-            // 每 4 位加逗号分隔（从右往左分组）
-            const fmtTok = n => String(Number(n) || 0).replace(/\B(?=(\d{4})+(?!\d))/g, ',')
-            const lines = [
-                '😡今日用量😡',
-                `调用次数：${calls}次`,
-                `未命中缓存：${fmtTok(missTok)}`,
-                `命中缓存：${fmtTok(cache)}（${cachePct}%）`,
-                `总输入：${fmtTok(input)}`,
-                `输出：${fmtTok(output)}`,
-                `搜索：${searches}次`,
-                `预估花费：${cost.toFixed(2)}（按谷峰价）`,
-                `当前时段：${nowPeak ? '梁文峰' : '梁文谷'}`
-            ]
-            await this.reply(lines.join('\n'), true)
-            return true
-        } catch (err) {
-            logger.error('[AI-Commands] 今日用量统计失败:', err.message)
-            await this.reply('❌ 统计失败: ' + err.message, true)
-            return true
-        }
-    }
-
     async todayWordCloud() {
         const e = this.e
         if (!e.group_id) {

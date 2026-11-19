@@ -234,13 +234,24 @@ export const imageGenTools = [
                     })
                 }
 
-                const imageUrls =
-                    image_url !== undefined && image_url !== ''
-                        ? [image_url]
-                        : (await resolveReferenceImages(e, [], 1)).slice(0, 1)
+                const imageUrls = image_url ? [image_url] : []
+                if (config.get('features.imageGen.videoEnabled') === false) {
+                    return {
+                        success: false,
+                        error: '视频生成未启用：当前绘图渠道不支持视频模型，可在 features.imageGen.videoEnabled 开启并配置支持视频的 API'
+                    }
+                }
+
                 const result = await imageGen.generateVideo({ prompt, imageUrls })
 
                 if (!result.success) {
+                    const raw = String(result.error || '')
+                    if (/404|not found/i.test(raw)) {
+                        return {
+                            success: false,
+                            error: `视频生成失败：当前绘图渠道不支持该视频模型（404）。请更换支持视频的 API，或在配置中关闭 features.imageGen.videoEnabled`
+                        }
+                    }
                     return { success: false, error: result.error }
                 }
 

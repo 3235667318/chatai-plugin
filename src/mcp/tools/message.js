@@ -15,13 +15,6 @@ import {
     buildBigImageCard
 } from './helpers.js'
 import { recordSentMessage, checkDuplicateToolSend, markToolSendCommitted } from '../../utils/messageDedup.js'
-function stripReplyAtNames(text) {
-    return String(text || '')
-        .replace(/@[\u4e00-\u9fa5A-Za-z0-9_·]{2,16}/g, '')
-        .replace(/@\d{5,12}/g, '')
-        .trim()
-}
-
 import {
     normalizeStandardMessage,
     StandardBotApi,
@@ -183,7 +176,7 @@ export const messageTools = [
                     return { success: false, error: `检测到重复发送(${masterDedup.count}次)，已跳过`, skipped: true }
                 }
                 const msgParts = []
-                if (args.message) msgParts.push(stripReplyAtNames(args.message))
+                if (args.message) msgParts.push(args.message)
                 if (args.image_url) msgParts.push(segment.image(args.image_url))
 
                 if (msgParts.length === 0) {
@@ -218,7 +211,7 @@ export const messageTools = [
                     const masterId = api.targetId(masters[idx])
                     const sent = await api.sendPrivate(masterId, msgParts.length === 1 ? msgParts[0] : msgParts)
 
-                    if (cleanMessage) recordSentMessage(cleanMessage)
+                    if (args.message) recordSentMessage(args.message)
                     return { success: true, master_id: masterId, message_id: sent.message_id }
                 }
             } catch (err) {
@@ -320,7 +313,7 @@ export const messageTools = [
                 const userId = api.targetId(args.user_id)
 
                 const msgParts = []
-                if (args.message) msgParts.push(stripReplyAtNames(args.message))
+                if (args.message) msgParts.push(args.message)
                 if (args.image_url) msgParts.push(segment.image(args.image_url))
 
                 if (msgParts.length === 0) {
@@ -372,7 +365,7 @@ export const messageTools = [
                 if (args.at_user) {
                     msgParts.push(args.at_user === 'all' ? segment.at('all') : segment.at(args.at_user))
                 }
-                if (args.message) msgParts.push(stripReplyAtNames(args.message))
+                if (args.message) msgParts.push(args.message)
                 if (args.image_url) msgParts.push(segment.image(args.image_url))
 
                 if (msgParts.length === 0) {
@@ -402,12 +395,7 @@ export const messageTools = [
         },
         handler: async (args, ctx) => {
             try {
-                // 回复正文里不保留 @名字（@ 由 at_sender / at_user 工具负责）
-                const cleanMessage = String(args.message || '')
-                    .replace(/@[\u4e00-\u9fa5A-Za-z0-9_·]{2,16}/g, '')
-                    .replace(/@\d{5,12}/g, '')
-                    .trim()
-                const replySig = `${cleanMessage}|at:${!!args.at_sender}|q:${!!args.quote}`
+                const replySig = `${args.message}|at:${!!args.at_sender}|q:${!!args.quote}`
                 const dedupResult = checkDuplicateToolSend(ctx, 'reply_current_message', replySig)
                 if (dedupResult.isDuplicate) {
                     return { success: false, error: `检测到重复发送(${dedupResult.count}次)，已跳过`, skipped: true }
@@ -423,7 +411,7 @@ export const messageTools = [
                     msgParts.push(segment.at(e.user_id))
                     msgParts.push(' ')
                 }
-                msgParts.push(cleanMessage)
+                msgParts.push(args.message)
 
                 const sent = await new StandardBotApi({ event: e }).reply(msgParts, args.quote || false)
                 if (args.message) recordSentMessage(args.message)
@@ -655,6 +643,19 @@ export const messageTools = [
 
                 if (args.message) recordSentMessage(args.message)
                 markToolSendCommitted(ctx, 'at_user', dedupContent)
+                // 记录工具已发送的文本，聊天回复里若内容相同就不再重发（避免一条@一条纯文本）
+                try {
+                    const sentKey = String(args.message || '')
+                        .replace(/@[^\s@]{1,20}/g, '')
+                        .replace(/\s+/g, '')
+                        .trim()
+                    if (sentKey) {
+                        const sentTexts = (globalThis.__chataiToolSentTexts ||= new Map())
+                        const nowTs = Date.now()
+                        sentTexts.set(sentKey, nowTs)
+                        for (const [k, t] of sentTexts) if (nowTs - t > 60000) sentTexts.delete(k)
+                    }
+                } catch {}
 
                 const successCount = results.filter(r => r.success).length
                 return {
@@ -754,7 +755,7 @@ export const messageTools = [
                         msgParts.push(segment.at(member.user_id || member.uid))
                         msgParts.push(' ')
                     }
-                    if (args.message) msgParts.push(stripReplyAtNames(args.message))
+                    if (args.message) msgParts.push(args.message)
 
                     try {
                         const result = await api.reply(msgParts)
@@ -852,7 +853,7 @@ export const messageTools = [
                     msgParts.push(segment.at(member.user_id || member.uid))
                     msgParts.push(' ')
                 }
-                if (args.message) msgParts.push(stripReplyAtNames(args.message))
+                if (args.message) msgParts.push(args.message)
 
                 const result = await api.reply(msgParts)
                 if (args.message) recordSentMessage(args.message)
@@ -2990,6 +2991,20 @@ export const forwardDataTools = [
                     source,
                     msgrecord: record
                 }
+                // 事件对象可能带 socket/bot 等循环引用，返回前转成纯数据
+                const toSafeJson = obj => {
+                    const seen = new WeakSet()
+                    return JSON.parse(
+                        JSON.stringify(obj, (key, value) => {
+                            if (typeof value === 'function') return undefined
+                            if (value && typeof value === 'object') {
+                                if (seen.has(value)) return '[Circular]'
+                                seen.add(value)
+                            }
+                            return value
+                        })
+                    )
+                }
 
                 // 尝试提取 proto
                 if (args.include_proto) {
@@ -2999,7 +3014,7 @@ export const forwardDataTools = [
                     }
                 }
 
-                return result
+                return toSafeJson(result)
             } catch (err) {
                 return { success: false, error: `获取消息记录失败: ${err.message}` }
             }

@@ -770,7 +770,7 @@ class WebServer {
         this.router.use((req, res) => {
             const webDir = path.join(__dirname, '../../resources/web')
             const reqPath = req.path.replace(/\/$/, '') || ''
-            const standalonePages = ['game-edit', 'login', 'group-admin', 'group-memory']
+            const standalonePages = ['game-edit', 'login', 'group-admin']
             for (const page of standalonePages) {
                 if (reqPath === `/${page}` || reqPath.startsWith(`/${page}/`)) {
                     const pageIndex = path.join(webDir, page, 'index.html')

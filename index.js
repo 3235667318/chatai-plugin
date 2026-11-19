@@ -6,6 +6,7 @@ import { chatLogger, c, icons } from './src/core/utils/logger.js'
 import { telemetryService } from './src/services/telemetry/index.js'
 import { getFullVersionInfo } from './src/utils/version.js'
 import { registerQQBotMessageCache } from './src/services/storage/MessageCache.js'
+import { registerGroupMessageFeed } from './src/services/context/GroupMessageFeed.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -36,6 +37,7 @@ if (!fs.existsSync(dataDir)) {
 config.startSync(dataDir)
 global.chatgptPluginConfig = config
 registerQQBotMessageCache()
+registerGroupMessageFeed()
 
 // 启动即初始化 Redis 并等待就绪。
 // 调用统计/历史直接从 Redis 读取，之前只有首次聊天（ChannelManager.init）才建立连接，
@@ -182,15 +184,7 @@ const appsPromise = (async () => {
         })
     )
 })()
-const raceTimeout = (p, ms) =>
-    Promise.race([
-        p,
-        new Promise(resolve => setTimeout(() => resolve({ name: 'Timeout', status: 'warn', error: `超过 ${ms}ms` }), ms))
-    ])
-const [appsResults, ...initResults] = await Promise.all([
-    appsPromise,
-    ...initTasks.map(t => raceTimeout(t, 15000))
-])
+const [appsResults, ...initResults] = await Promise.all([appsPromise, ...initTasks])
 if (Array.isArray(appsResults)) {
     for (const result of appsResults) {
         if (result.status === 'fulfilled') {

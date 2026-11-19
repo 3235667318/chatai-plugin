@@ -1,16 +1,15 @@
 /* eslint-disable */
 
-const BUILD_VERSION = '5b9b666135e1'
+const BUILD_VERSION = 'a6b76c3b5763'
 const CACHE_NAME = 'chatai-assets-' + BUILD_VERSION
 const BASE = '/chatai'
 const PRECACHE = [
-    "/chatai/_next/static/MmsEAkkqYgpZQ2cx3W4J3/_buildManifest.js",
-    "/chatai/_next/static/MmsEAkkqYgpZQ2cx3W4J3/_clientMiddlewareManifest.json",
-    "/chatai/_next/static/MmsEAkkqYgpZQ2cx3W4J3/_ssgManifest.js",
+    "/chatai/_next/static/_yAGrAeUpWzafpkQ_IeXA/_buildManifest.js",
+    "/chatai/_next/static/_yAGrAeUpWzafpkQ_IeXA/_clientMiddlewareManifest.json",
+    "/chatai/_next/static/_yAGrAeUpWzafpkQ_IeXA/_ssgManifest.js",
     "/chatai/_next/static/chunks/08c50fa76aa9b4fb.js",
     "/chatai/_next/static/chunks/0c5ed3ae3e630310.js",
     "/chatai/_next/static/chunks/0e9552a4f5da982b.js",
-    "/chatai/_next/static/chunks/1497ec6c90fb48c4.js",
     "/chatai/_next/static/chunks/1503555e6312795e.js",
     "/chatai/_next/static/chunks/151c3947c823bddb.js",
     "/chatai/_next/static/chunks/18f67ae079fad45f.js",
@@ -29,7 +28,6 @@ const PRECACHE = [
     "/chatai/_next/static/chunks/375bbc7bec34379e.js",
     "/chatai/_next/static/chunks/3ee97f41e0627a77.js",
     "/chatai/_next/static/chunks/3f1a724c60cc37d9.js",
-    "/chatai/_next/static/chunks/47a5084af869604d.js",
     "/chatai/_next/static/chunks/5147aa98213b7a37.js",
     "/chatai/_next/static/chunks/5716711855e6e33c.js",
     "/chatai/_next/static/chunks/5f05aac0e718da06.js",
@@ -53,7 +51,6 @@ const PRECACHE = [
     "/chatai/_next/static/chunks/975d596a52cde54a.js",
     "/chatai/_next/static/chunks/9b2c5451f0b67975.js",
     "/chatai/_next/static/chunks/9f46749ac97b863a.js",
-    "/chatai/_next/static/chunks/a6490fb951ddd9b1.js",
     "/chatai/_next/static/chunks/a6dad97d9634a72d.js",
     "/chatai/_next/static/chunks/a6dad97d9634a72d.js.map",
     "/chatai/_next/static/chunks/af1264b170dd3b20.js",
@@ -69,11 +66,14 @@ const PRECACHE = [
     "/chatai/_next/static/chunks/c80f5a16fd56b6cf.js",
     "/chatai/_next/static/chunks/d0d03ea8bce14dee.js",
     "/chatai/_next/static/chunks/d1800f46f072bd73.js",
+    "/chatai/_next/static/chunks/d197ba225e9386d8.js",
     "/chatai/_next/static/chunks/d19e0b5de21468ba.js",
     "/chatai/_next/static/chunks/d742f3e813296f40.js",
     "/chatai/_next/static/chunks/d8631884e1cdeac7.js",
+    "/chatai/_next/static/chunks/d94e460bdfa8b197.js",
     "/chatai/_next/static/chunks/e1d4530e3a3a51d6.js",
     "/chatai/_next/static/chunks/e22f627f748fbac3.js",
+    "/chatai/_next/static/chunks/f1ab86f6205d9b07.js",
     "/chatai/_next/static/chunks/f2b9bd3d7dd29b78.js",
     "/chatai/_next/static/chunks/ff1a16fafef87110.js",
     "/chatai/_next/static/chunks/ffc6f60fe91ac0a9.js",

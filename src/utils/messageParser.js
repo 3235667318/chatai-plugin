@@ -239,9 +239,8 @@ export async function parseUserMessage(e, options = {}) {
                                 logger.warn(`[MessageParser][AT] 获取群成员信息失败: ${err.message}`)
                             }
                         }
-                        const displayName = groupCard || nickname || atCard || `用户${qq || uid || '未知'}`
-                        let atText = qq ? `[提及用户 QQ:${qq}` : '[提及用户'
-                        if (!qq && uid) atText += ` uid:${uid}`
+                        const displayName = groupCard || nickname || atCard || `用户${qq}`
+                        let atText = `[提及用户 QQ:${qq}`
                         if (groupCard) atText += ` 群名片:"${groupCard}"`
                         if (nickname && nickname !== groupCard) atText += ` 昵称:"${nickname}"`
                         if (role && role !== 'member')

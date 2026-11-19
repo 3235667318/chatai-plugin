@@ -207,8 +207,15 @@ export const searchTools = [
                 const text = args.text
                 const targetLang = args.to || 'zh'
 
-                // 使用免费翻译 API
-                const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${args.from || 'auto'}|${targetLang}`
+                // MyMemory 不接受 auto，需先做简单语言判断
+                const rawFrom = String(args.from || '').trim()
+                const sourceLang =
+                    rawFrom && rawFrom.toLowerCase() !== 'auto'
+                        ? rawFrom
+                        : /[\u4e00-\u9fa5]/.test(text)
+                          ? 'zh-CN'
+                          : 'en'
+                const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}`
 
                 const response = await fetch(url, { signal: AbortSignal.timeout(SEARCH_API_TIMEOUT_MS) })
                 const data = await response.json()
@@ -221,7 +228,7 @@ export const searchTools = [
                     success: true,
                     original: text,
                     translated: data.responseData.translatedText,
-                    from: args.from || 'auto',
+                    from: sourceLang,
                     to: targetLang
                 }
             } catch (err) {

@@ -91,8 +91,7 @@ export function buildGroupEnvironmentPrompt(options = {}) {
 
     const lines = ['[当前对话环境]', `群号: ${groupId}`]
     if (groupName) lines.push(`群名: ${groupName}`)
-    // 让模型知道真实当前时间（人设里写的「深夜」之类只是场景，不能当真）
-    // 「当前用户」已移到本轮用户消息的动态上下文里，system 只保留群级稳定信息
+    lines.push(`${labeledHistory ? '当前发送消息的用户' : '当前用户'}: ${userLabel}(QQ:${userUin})`)
 
     if (labeledHistory) {
         lines.push('你正在群聊中与多位用户对话，历史消息可能来自不同的人。')
@@ -101,7 +100,6 @@ export function buildGroupEnvironmentPrompt(options = {}) {
     }
     if (mentionHint) {
         lines.push('消息中的 `[提及用户 QQ:xxx ...]` 是系统对 @ 的展开，附带被@者的QQ号、群名片、昵称等信息。')
-    lines.push('群友聊天里提到的名字、称呼（如“这是龙哥”“某哥”）指的是别人；只有明确 @ 你、引用你、或叫你的名字时，才当成在叫你。')
     }
 
     return `\n\n${lines.join('\n')}`
@@ -355,28 +353,6 @@ export class ContextManager {
      * @param {Object} options
      * @returns {Promise<boolean>}
      */
-    /** 把会话压缩总结写入该群的群记忆（覆盖上一条上下文总结） */
-    _saveContextSummaryToGroupMemory(conversationId, summaryText) {
-        const m = String(conversationId || '').match(/^group:(.+)$/)
-        if (!m) return
-        const gid = String(m[1])
-        const content = String(summaryText || '').replace(/\s+/g, ' ').trim().slice(0, 400)
-        if (!gid || !content) return
-        const db = databaseService.db
-        if (!db) return
-        const now = Date.now()
-        const del = db.prepare("DELETE FROM structured_memories WHERE group_id = ? AND source = 'context_summary'")
-        const ins = db.prepare(`
-            INSERT INTO structured_memories
-            (user_id, group_id, category, sub_type, content, confidence, source, metadata, created_at, updated_at, expires_at, is_active)
-            VALUES (?, ?, 'summary', 'general', ?, 0.7, 'context_summary', NULL, ?, ?, NULL, 1)
-        `)
-        db.transaction(() => {
-            del.run(gid)
-            ins.run(`群${gid}`, gid, content, now, now)
-        })()
-    }
-
     async summarizeConversation(conversationId, options = {}) {
         try {
             const history = await historyManager.getHistory(undefined, conversationId)
@@ -463,13 +439,6 @@ export class ContextManager {
                 return false
             }
 
-            // 上下文总结同时进群记忆，方便在 Web 里查看/管理
-            try {
-                this._saveContextSummaryToGroupMemory(conversationId, summaryText)
-            } catch (err) {
-                logger.debug('[ContextManager] 上下文总结写入群记忆失败:', err.message)
-            }
-
             // 只保留最新一条，即刚写入的总结
             await historyManager.trimHistory(conversationId, 1)
 
@@ -477,6 +446,326 @@ export class ContextManager {
             return true
         } catch (err) {
             logger.error(`[ContextManager] 总结会话失败 (${conversationId}):`, err.message)
+            return false
+        }
+    }
+
+    /**
+     * 统计某会话在库里的消息条数
+     * @param {string} conversationId
+     * @returns {number}
+     */
+    countHistory(conversationId) {
+        try {
+            const db = databaseService.db
+            if (!db) return 0
+            const row = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?').get(conversationId)
+            return Number(row?.c) || 0
+        } catch {
+            return 0
+        }
+    }
+
+    /**
+     * 压缩历史：把较旧的对话压成一条摘要写回历史，只保留最近 keepMessages 条原文
+     * @param {string} conversationId
+     * @param {Object} [options]
+     * @param {number} [options.keepMessages] - 保留的最近消息条数
+     * @param {number} [options.maxTokens] - 摘要最大 token
+     * @param {string} [options.model] - 摘要模型（默认全局默认模型）
+     * @returns {Promise<boolean>}
+     */
+    async compactHistory(conversationId, options = {}) {
+        try {
+            const cfg = config.get('context.compaction') || {}
+            if (cfg.enabled === false) return false
+            if (!conversationId) return false
+            const keepMessages = Math.max(2, Number(options.keepMessages ?? cfg.keepMessages ?? 2))
+            const history = await historyManager.getHistory(undefined, conversationId)
+            if (!Array.isArray(history) || history.length <= keepMessages) return false
+            const cutIndex = history.length - keepMessages
+            const oldMessages = history.slice(0, cutIndex)
+            if (oldMessages.length < 4) return false
+
+            const dialogText = oldMessages
+                .map(msg => {
+                    const roleLabel = msg.role === 'assistant' ? '助手' : msg.role === 'system' ? '系统' : '用户'
+                    const text = Array.isArray(msg.content)
+                        ? msg.content
+                              .filter(c => c.type === 'text')
+                              .map(c => c.text || '')
+                              .join('')
+                        : typeof msg.content === 'string'
+                          ? msg.content
+                          : ''
+                    return `${roleLabel}: ${text}`.trim()
+                })
+                .filter(Boolean)
+                .join('\n')
+            if (!dialogText || dialogText.length < 50) return false
+
+            const model = options.model || cfg.model || config.get('llm.defaultModel')
+            const prompt = buildSummaryPrompt(dialogText, options.maxTokens || cfg.maxTokens || 400)
+            const { LlmService } = await import('./LlmService.js')
+            const groupId = extractConversationGroupId(conversationId)
+            const client = await LlmService.getChatClient({ model, groupId: groupId || undefined })
+            const _temp = resolveClientTemperature(client, 0.2)
+            const requestOptions = {
+                model,
+                maxToken: options.maxTokens || cfg.maxTokens || 400,
+                ...(_temp !== undefined ? { temperature: _temp } : {}),
+                disableHistorySave: true,
+                ...(groupId ? { groupId } : {})
+            }
+            const canSend =
+                typeof client?.sendMessage === 'function' || typeof client?.sendMessageWithHistory === 'function'
+            if (!canSend) {
+                logger.warn('[ContextManager] 压缩历史失败：客户端无可发送契约')
+                return false
+            }
+            const delegated = await delegateRequest({
+                userMessage: { role: 'user', content: [{ type: 'text', text: prompt }] },
+                initialModel: model,
+                initialChannel: client._channelInfo?.channel || null,
+                initialClient: client,
+                clientBaseOptions: {},
+                requestOptions,
+                event: null,
+                source: 'context-compaction'
+            })
+            const summaryText = delegated.response?.contents?.[0]?.text?.trim()
+            if (!summaryText) return false
+
+            // 摘要放在被压缩消息之前，保证历史顺序仍是「摘要 → 最近对话」
+            const firstTs = Number(oldMessages[0]?.timestamp) || Date.now()
+            const summaryMessage = {
+                role: 'assistant',
+                content: [{ type: 'text', text: `【对话已总结】\n${summaryText}` }],
+                timestamp: Math.max(1, firstTs - 1),
+                metadata: {
+                    summarized: true,
+                    kind: 'context_compaction',
+                    summarizedCount: oldMessages.length,
+                    compactedAt: Date.now()
+                }
+            }
+            await historyManager.saveHistory(summaryMessage, conversationId)
+
+            // 回读确认摘要在库后才删旧消息
+            const afterSave = await historyManager.getHistory(undefined, conversationId)
+            const saved = afterSave?.some(
+                msg =>
+                    msg.metadata?.summarized === true &&
+                    msg.metadata?.kind === 'context_compaction' &&
+                    Number(msg.timestamp) === Number(summaryMessage.timestamp)
+            )
+            if (!saved) {
+                logger.error('[ContextManager] 压缩摘要未确认落库，跳过裁剪以保护历史')
+                return false
+            }
+
+            const db = databaseService.db
+            const ids = oldMessages.map(msg => msg.id).filter(Boolean)
+            if (db && ids.length > 0) {
+                const del = db.prepare('DELETE FROM messages WHERE conversation_id = ? AND id = ?')
+                db.transaction(list => list.forEach(id => del.run(conversationId, id)))(ids)
+            }
+            logger.debug(
+                `[ContextManager] 历史已压缩: ${conversationId} 压缩 ${oldMessages.length} 条，保留 ${keepMessages} 条`
+            )
+            return true
+        } catch (err) {
+            logger.warn('[ContextManager] 压缩历史失败:', err.message)
+            return false
+        }
+    }
+
+    /**
+     * 调用 LLM 把一段对话文本压成摘要，并清理可能的思考过程
+     * @param {string} dialogText
+     * @param {Object} [options]
+     * @returns {Promise<string>}
+     */
+    async _summarizeText(dialogText, options = {}) {
+        try {
+            const text = String(dialogText || '').trim()
+            if (text.length < 10) return ''
+            const model = options.model || config.get('llm.defaultModel')
+            const maxTokens = Number(options.maxTokens) || 400
+            const prompt = buildSummaryPrompt(text, maxTokens)
+            const { LlmService } = await import('./LlmService.js')
+            const groupId = options.groupId || null
+            const client = await LlmService.getChatClient({ model, groupId: groupId || undefined })
+            const _temp = resolveClientTemperature(client, 0.2)
+            const canSend =
+                typeof client?.sendMessage === 'function' || typeof client?.sendMessageWithHistory === 'function'
+            if (!canSend) return ''
+            const delegated = await delegateRequest({
+                userMessage: { role: 'user', content: [{ type: 'text', text: prompt }] },
+                initialModel: model,
+                initialChannel: client._channelInfo?.channel || null,
+                initialClient: client,
+                clientBaseOptions: {},
+                requestOptions: {
+                    model,
+                    maxToken: maxTokens,
+                    ...(_temp !== undefined ? { temperature: _temp } : {}),
+                    disableHistorySave: true,
+                    ...(groupId ? { groupId } : {})
+                },
+                event: null,
+                source: options.source || 'history-summary'
+            })
+            let out = String(delegated.response?.contents?.[0]?.text || '').trim()
+            const cut = out.lastIndexOf('总结：')
+            if (cut >= 0) out = out.slice(cut + 3).trim()
+            out = out
+                .split('\n')
+                .filter(line => !/^(我们|需要|要求|正文|输出|格式|注意|思路|分析|检查)/.test(line.trim()))
+                .join('\n')
+                .trim()
+            return out
+        } catch (err) {
+            logger.warn('[ContextManager] 摘要生成失败:', err.message)
+            return ''
+        }
+    }
+
+    /**
+     * 生成一段摘要并写入历史（用于前情消息）
+     * @param {string} conversationId
+     * @param {string} dialogText
+     * @param {Object} [options]
+     * @returns {Promise<boolean>}
+     */
+    async appendSummaryToHistory(conversationId, dialogText, options = {}) {
+        try {
+            if (!conversationId) return false
+            const marker = options.marker || '【前情摘要】'
+            // 很短的前情不值得调用模型，本地压成一行摘要即可
+            const rawText = String(dialogText || '').trim()
+            const localDigest = () => {
+                const oneLine = rawText
+                    .split('\n')
+                    .map(l => l.trim())
+                    .filter(Boolean)
+                    .join('；')
+                    .replace(/\s+/g, ' ')
+                return oneLine.length > 160 ? oneLine.slice(0, 160) + '…' : oneLine
+            }
+            const summaryText =
+                rawText.length < 40
+                    ? localDigest()
+                    : await this._summarizeText(dialogText, {
+                maxTokens: options.maxTokens || 300,
+                groupId: extractConversationGroupId(conversationId),
+                source: 'pretrigger-summary'
+            })
+            if (!summaryText) return false
+            const timestamp = Date.now() - 1000
+            const message = {
+                role: 'assistant',
+                content: [{ type: 'text', text: `${marker}\n${summaryText}` }],
+                timestamp,
+                metadata: { summarized: true, kind: options.kind || 'pretrigger' }
+            }
+            await historyManager.saveHistory(message, conversationId)
+            const db = databaseService.db
+            const saved = db
+                ? db
+                      .prepare('SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND timestamp = ?')
+                      .get(conversationId, timestamp)?.c > 0
+                : true
+            if (!saved) {
+                logger.warn('[ContextManager] 前情摘要未落库')
+                return false
+            }
+            logger.debug(`[ContextManager] 已写入${marker} ${summaryText.length} 字`)
+            return true
+        } catch (err) {
+            logger.warn('[ContextManager] 写入前情摘要失败:', err.message)
+            return false
+        }
+    }
+
+    /**
+     * 深度压缩历史：超过阈值时，把最前面的一批消息压成一条摘要，保留最近若干条
+     * @param {string} conversationId
+     * @param {Object} [options]
+     * @returns {Promise<boolean>}
+     */
+    async deepCompactHistory(conversationId, options = {}) {
+        try {
+            const cfg = config.get('context.deepCompact') || {}
+            if (cfg.enabled === false) return false
+            if (!conversationId) return false
+            const trigger = Number(options.triggerMessages ?? cfg.triggerMessages ?? 600)
+            const compressCount = Number(options.compressMessages ?? cfg.compressMessages ?? 400)
+            const maxTokens = Number(options.maxTokens ?? cfg.maxTokens ?? 400)
+            const db = databaseService.db
+            if (!db) return false
+            const rows = db
+                .prepare(
+                    'SELECT rowid AS rid, role, content, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC, id ASC'
+                )
+                .all(conversationId)
+            if (rows.length <= trigger) return false
+            const oldRows = rows.slice(0, Math.min(compressCount, rows.length - 1))
+            if (oldRows.length < 20) return false
+
+            const dialogText = oldRows
+                .map(row => {
+                    let text = ''
+                    try {
+                        const obj = JSON.parse(row.content)
+                        text = Array.isArray(obj?.content)
+                            ? obj.content
+                                  .filter(c => c.type === 'text')
+                                  .map(c => c.text || '')
+                                  .join('')
+                            : ''
+                    } catch {
+                        text = String(row.content || '')
+                    }
+                    const roleLabel = row.role === 'assistant' ? '助手' : row.role === 'user' ? '用户' : '系统'
+                    return text ? `${roleLabel}: ${text}`.trim() : ''
+                })
+                .filter(Boolean)
+                .join('\n')
+            const summaryText = await this._summarizeText(dialogText, {
+                maxTokens,
+                groupId: extractConversationGroupId(conversationId),
+                source: 'deep-compact'
+            })
+            if (!summaryText) return false
+
+            const lastTs = Number(oldRows[oldRows.length - 1].timestamp) || Date.now()
+            const message = {
+                role: 'assistant',
+                content: [{ type: 'text', text: `【历史摘要】\n${summaryText}` }],
+                timestamp: lastTs,
+                metadata: { summarized: true, kind: 'deep-compact', compressedCount: oldRows.length }
+            }
+            await historyManager.saveHistory(message, conversationId)
+            const saved =
+                db.prepare('SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND timestamp = ?').get(
+                    conversationId,
+                    lastTs
+                )?.c > 0
+            if (!saved) {
+                logger.warn('[ContextManager] 深度压缩摘要未落库，已跳过删除以保护历史')
+                return false
+            }
+            const del = db.prepare('DELETE FROM messages WHERE rowid = ?')
+            db.transaction(list => list.forEach(row => del.run(row.rid)))(oldRows)
+            logger.mark(
+                `[ContextManager] 深度压缩完成: ${conversationId} 压缩 ${oldRows.length} 条，保留 ${
+                    rows.length - oldRows.length
+                } 条`
+            )
+            return true
+        } catch (err) {
+            logger.warn('[ContextManager] 深度压缩失败:', err.message)
             return false
         }
     }
@@ -769,9 +1058,8 @@ export class ContextManager {
             const textIndex = labeled.findIndex(c => c.type === 'text')
             if (textIndex >= 0) {
                 const existingText = labeled[textIndex].text || ''
-                // 已经带过时间戳（[名字(QQ)][HH:MM]:）就不要再插一次
-                const hasTime = /^\[[^\]]+\]\[\d{1,2}:\d{2}\]/.test(existingText)
-                const updated = hasTime ? existingText : existingText.replace(/^(\[[^\]]+\])/, `$1[${timeStr}]`)
+                // 在用户标签后插入时间
+                const updated = existingText.replace(/^(\[[^\]]+\])/, `$1[${timeStr}]`)
                 labeled[textIndex] = { ...labeled[textIndex], text: updated }
             }
             return labeled
@@ -790,29 +1078,20 @@ export class ContextManager {
     addUserLabelToContent(content, label, userId) {
         if (!content) return content
 
-        // 已经贴过 `[名字(QQ)]: ` 就不要贴第二遍（否则会变成「[A]: [A]: 内容」）
-        const labeledRe = /^\[[^\]]+\(\d+\)\](?:\[\d{1,2}:\d{2}\])?:\s*/
-
         // 如果是字符串，转换为数组格式
         if (typeof content === 'string') {
-            if (labeledRe.test(content)) return [{ type: 'text', text: content }]
             return [{ type: 'text', text: `[${label}(${userId})]: ${content}` }]
         }
 
-        // 如果是数组：先看有没有非空文本段已带标签；空段不当标签载体
+        // 如果是数组，给第一个文本内容添加标签
         if (Array.isArray(content)) {
-            const labeled = content.filter(c => !(c && c.type === 'text' && !String(c.text || '').trim()))
-            const textParts = labeled.filter(c => c && c.type === 'text')
-            if (textParts.length === 0) {
-                return [{ type: 'text', text: `[${label}(${userId})]: ` }, ...labeled]
-            }
-            if (textParts.some(c => labeledRe.test(String(c.text || '')))) {
-                return labeled
-            }
+            const labeled = [...content]
             const textIndex = labeled.findIndex(c => c.type === 'text')
-            labeled[textIndex] = {
-                ...labeled[textIndex],
-                text: `[${label}(${userId})]: ${labeled[textIndex].text || ''}`
+            if (textIndex >= 0) {
+                labeled[textIndex] = {
+                    ...labeled[textIndex],
+                    text: `[${label}(${userId})]: ${labeled[textIndex].text || ''}`
+                }
             }
             return labeled
         }

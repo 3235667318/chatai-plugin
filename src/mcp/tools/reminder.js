@@ -139,16 +139,8 @@ export const reminderTools = [
             required: ['time', 'message']
         },
         handler: async (params, context) => {
-            const { time, message } = params
+            const { time, message, target = 'user' } = params
             const e = context?.event
-            // 群聊里强制发到群里，避免提醒跑到私聊
-            const target = e?.group_id ? 'group' : (params.target || 'user')
-            try {
-                const { chatLogger } = await import('../../core/utils/logger.js')
-                chatLogger.mark(
-                    `[Reminder] 设定提醒 group=${e?.group_id || ''} user=${e?.user_id || ''} target=${target} msg=${message}`
-                )
-            } catch {}
 
             if (!e) {
                 return { success: false, message: '无法获取事件上下文' }
@@ -186,7 +178,7 @@ export const reminderTools = [
                     const targetUserId = api.targetId(userId)
                     const targetGroupId = api.targetId(groupId)
                     const atUser = StandardMessage.at(targetUserId)
-                    const reminderText = `${message}`
+                    const reminderText = `⏰ 提醒：${message}`
 
                     if (target === 'group' && targetGroupId) {
                         await api.sendGroup(targetGroupId, [atUser, ' ', reminderText])

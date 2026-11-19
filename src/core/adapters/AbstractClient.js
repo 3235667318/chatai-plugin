@@ -1989,10 +1989,27 @@ export class AbstractClient {
 
             const modelResponse = await this._sendMessage(requestHistories, apiKey, options)
 
-            // 保存用户请求
+            // 保存用户请求（先剥离仅本轮生效的临时上下文块，避免污染历史）
+            if (thisRequestMsg) {
+                try {
+                    const stripTransient = msg => {
+                        const re = /\n*【(?:触发前群聊|伪人模式)[\s\S]*$/
+                        if (!msg?.content) return msg
+                        if (typeof msg.content === 'string') {
+                            msg.content = msg.content.replace(re, '').trimEnd()
+                        } else if (Array.isArray(msg.content)) {
+                            for (const part of msg.content) {
+                                if (part?.type === 'text' && typeof part.text === 'string') {
+                                    part.text = part.text.replace(re, '').trimEnd()
+                                }
+                            }
+                        }
+                        return msg
+                    }
+                    thisRequestMsg = stripTransient(thisRequestMsg)
+                } catch {}
+            }
             if (thisRequestMsg && this.shouldPersistHistory(thisRequestMsg)) {
-                // 入库前剥掉本轮动态上下文块
-                thisRequestMsg = { ...thisRequestMsg, content: stripDynamicContextBlock(thisRequestMsg.content) }
                 await this.historyManager.saveHistory(thisRequestMsg, options.conversationId)
                 options.parentMessageId = thisRequestMsg.id
                 modelResponse.parentId = thisRequestMsg.id
@@ -2952,27 +2969,4 @@ export class AbstractClient {
     setOnMessageWithToolCall(callback) {
         this.onMessageWithToolCall = callback
     }
-}
-
-
-/**
- * 去掉本轮动态上下文包装（【本轮上下文…】【以上是上下文…】）。
- * 只用于写库：这块内容每轮都会重新生成，存进历史只会让历史越滚越脏、还破坏缓存前缀。
- */
-function stripDynamicContextBlock(content) {
-    const RE = /^【本轮上下文（仅参考，不用复述）】[\s\S]*?【以上是上下文，下面才是用户的话】\n?/
-    if (typeof content === 'string') return content.replace(RE, '')
-    if (Array.isArray(content)) {
-        const out = []
-        let stripped = false
-        for (const part of content) {
-            if (!stripped && part && typeof part === 'object' && typeof part.text === 'string') {
-                const text = part.text.replace(RE, '')
-                if (text !== part.text) { out.push({ ...part, text }); stripped = true; continue }
-            }
-            out.push(part)
-        }
-        return out
-    }
-    return content
 }

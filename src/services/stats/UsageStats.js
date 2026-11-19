@@ -404,8 +404,6 @@ class UsageStats {
             isEstimated: record.isEstimated || false, // 标记是否为估算值
             // 记录原始请求（限制大小）
             request: record.request ? this.truncateRequest(record.request) : null,
-            // 响应文本（截断；记忆总结等场景用于排查）
-            responseText: record.responseText ? String(record.responseText).slice(0, 500) : null,
             // 仅失败时记录响应
             response: !isSuccess && record.response ? this.truncateResponse(record.response) : null
         }
@@ -545,32 +543,11 @@ class UsageStats {
                         return null
                     }
                 })
-                .filter(Boolean)
-        } catch {
-            records = [...this.recentStats]
-        }
-
-        // 应用过滤器
-        if (filter.channelId) {
-            records = records.filter(r => r.channelId === filter.channelId)
-        }
-        if (filter.model) {
-            records = records.filter(r => r.model === filter.model)
-        }
-        if (filter.success !== undefined) {
-            records = records.filter(r => r.success === filter.success)
-        }
-        if (filter.source) {
-            const sourceAliases = {
-                memory_group: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                memory_user: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                memory_extract: ['memory_extract', '记忆提取'],
-                群记忆: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                群记忆总结: ['memory_group', '群记忆总结', '群记忆', '时间段记忆总结'],
-                用户记忆: ['memory_user', '记忆总结', '用户记忆'],
-                记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                个人记忆总结: ['memory_user', '个人记忆总结', '记忆总结', '用户记忆'],
-                记忆提取: ['memory_extract', '记忆提取']
+                .filter(record => record && typeof record === 'object')
+        const applyFilters = input => {
+            let records = input
+            if (hasValue(safeFilter.channelId)) {
+                records = records.filter(record => record.channelId === safeFilter.channelId)
             }
             if (hasValue(safeFilter.model)) {
                 records = records.filter(record => record.model === safeFilter.model)

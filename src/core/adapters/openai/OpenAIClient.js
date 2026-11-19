@@ -1,3 +1,4 @@
+import config from '../../../../config/config.js'
 import { chatLogger } from '../../utils/logger.js'
 const logger = chatLogger
 import OpenAI from 'openai'
@@ -51,7 +52,7 @@ const RESPONSES_EXTRA_PARAM_KEYS = [
     'truncation',
     'user'
 ]
-const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+const OPENAI_REASONING_EFFORTS = new Set(['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 const RESPONSES_EXECUTABLE_ITEM_TYPES = new Set(['function_call', 'custom_tool_call', 'local_shell_call', 'shell_call'])
 
 function mergeResponseTools(functionTools = [], openaiResponses = {}) {
@@ -419,8 +420,7 @@ function shouldAttachVendorThinkingType(control, baseUrl) {
         u.includes('open.bigmodel') ||
         u.includes('zhipu') ||
         u.includes('glm') ||
-        u.includes('maas') ||
-        u.includes('deepseek')
+        u.includes('maas')
     )
 }
 
@@ -1641,6 +1641,18 @@ export class OpenAIClient extends AbstractClient {
             requestPayload.max_tokens = options.maxToken
         }
 
+        // 关闭推理：部分网关（如 Command Code）需要显式 reasoning_effort=off，否则模型仍会思考
+        try {
+            const offEffort = config.get('thinking.disabledReasoningEffort')
+            if (!enableReasoning && offEffort && !requestPayload.reasoning_effort) {
+                requestPayload.reasoning_effort = String(offEffort)
+                if (requestPayload.max_tokens !== undefined && requestPayload.max_completion_tokens === undefined) {
+                    requestPayload.max_completion_tokens = requestPayload.max_tokens
+                    delete requestPayload.max_tokens
+                }
+            }
+        } catch {}
+
         // Remove undefined/null values to prevent API errors
         Object.keys(requestPayload).forEach(key => {
             if (requestPayload[key] === undefined || requestPayload[key] === null) {
@@ -2105,6 +2117,18 @@ export class OpenAIClient extends AbstractClient {
         } else {
             requestPayload.max_tokens = options.maxToken
         }
+
+        // 关闭推理：部分网关（如 Command Code）需要显式 reasoning_effort=off，否则模型仍会思考
+        try {
+            const offEffort = config.get('thinking.disabledReasoningEffort')
+            if (!enableReasoning && offEffort && !requestPayload.reasoning_effort) {
+                requestPayload.reasoning_effort = String(offEffort)
+                if (requestPayload.max_tokens !== undefined && requestPayload.max_completion_tokens === undefined) {
+                    requestPayload.max_completion_tokens = requestPayload.max_tokens
+                    delete requestPayload.max_tokens
+                }
+            }
+        } catch {}
 
         // Remove undefined/null values to prevent API errors
         Object.keys(requestPayload).forEach(key => {

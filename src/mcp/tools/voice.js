@@ -9,7 +9,7 @@ import { hasStandardTarget, StandardBotApi, StandardMessage, StandardRawApi } fr
  */
 
 /** VITS 语音合成服务地址 */
-const VITS_BASE_URL = 'https://vist.wsocket.xyz'
+const VITS_BASE_URL = 'https://vist.openel.top'
 
 /** VITS 服务访问令牌 */
 const VITS_AUTH_TOKEN = 'vits_88e801332d5485b08731a5f0e3c742b11a799d00693a5d4f'
@@ -346,69 +346,6 @@ function resolveVitsAudioUrl(audio) {
         }
     }
     return ''
-}
-
-/**
- * 发送 TTS 语音，兼容 groupId 与 userId 同时提供。
- * 群聊上下文优先向指定用户发群临时会话，私聊上下文优先发私聊；两种优先方式失败后
- * 都回退到显式群，避免 StandardBotApi 因双目标互斥而直接报错。
- * @param {StandardBotApi} api - 标准接口
- * @param {Object|null} event - 当前事件
- * @param {Object} options - 发送参数
- * @param {string|number|null} [options.groupId] - 显式群目标
- * @param {string|number|null} [options.userId] - 显式用户目标
- * @param {*} options.message - 待发送消息
- * @param {Object} logger - 日志器
- * @returns {Promise<{result: Object, targetInfo: string, delivery: string, fallback: boolean}>} 发送结果与投递方式
- */
-export async function sendTtsRecord(api, event, { groupId, userId, message, logger }) {
-    const hasGroup = hasStandardTarget(groupId)
-    const hasUser = hasStandardTarget(userId)
-
-    if (hasGroup && hasUser) {
-        if (event?.isGroup || hasStandardTarget(event?.group_id)) {
-            try {
-                const result = await api.sendTemporary(groupId, userId, message)
-                return {
-                    result,
-                    targetInfo: `群 ${groupId} 临时会话 ${userId}`,
-                    delivery: 'temporary',
-                    fallback: false
-                }
-            } catch (error) {
-                logger.warn(`[send_tts] 群临时会话发送失败，回退到群 ${groupId}: ${error.message}`)
-                return {
-                    result: await api.send({ groupId, message }),
-                    targetInfo: `群 ${groupId}（临时会话失败回退）`,
-                    delivery: 'group',
-                    fallback: true
-                }
-            }
-        }
-
-        try {
-            const result = await api.send({ userId, message })
-            return { result, targetInfo: `私聊 ${userId}`, delivery: 'private', fallback: false }
-        } catch (error) {
-            logger.warn(`[send_tts] 私聊发送失败，回退到群 ${groupId}: ${error.message}`)
-            return {
-                result: await api.send({ groupId, message }),
-                targetInfo: `群 ${groupId}（私聊失败回退）`,
-                delivery: 'group',
-                fallback: true
-            }
-        }
-    }
-
-    const result = await api.send({ groupId, userId, message })
-    const targetInfo = hasUser
-        ? `私聊 ${userId}`
-        : hasGroup
-          ? `群 ${groupId}`
-          : event?.isGroup
-            ? `当前群 ${event.group_id}`
-            : `当前私聊 ${event?.user_id}`
-    return { result, targetInfo, delivery: hasUser ? 'private' : hasGroup ? 'group' : 'current', fallback: false }
 }
 
 export const voiceTools = [
@@ -922,7 +859,7 @@ export const voiceTools = [
                     return { success: false, error: `下载音频失败: ${downloadErr.message}` }
                 }
 
-                // 发送语音消息：双目标在群聊上下文走群临时会话，私聊上下文走私聊，失败均回退到显式群
+                // 发送语音消息
                 const recordSeg = StandardMessage.record(recordData)
                 const delivery = await sendTtsRecord(api, e, {
                     groupId: targetGroupId,

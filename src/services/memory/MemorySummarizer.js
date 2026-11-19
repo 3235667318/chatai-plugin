@@ -195,42 +195,6 @@ export function parseMemorySummaryResponse(response) {
         return []
     }
 
-    // 先尝试从带思考过程的输出里抠出 JSON（数组或 {memories|topics|relations:[...]}）
-    const jsonPayload = (() => {
-        const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
-        const candidates = []
-        if (fence) candidates.push(fence[1])
-        const arr = text.match(/\[[\s\S]*\]/)
-        if (arr) candidates.push(arr[0])
-        const obj = text.match(/\{[\s\S]*\}/)
-        if (obj) candidates.push(obj[0])
-        for (const c of candidates) {
-            try {
-                const parsed = JSON.parse(c)
-                if (Array.isArray(parsed)) {
-                    const items = parsed.map(x => (typeof x === 'string' ? x : x?.content || x?.text || x?.memory)).filter(Boolean)
-                    if (items.length) return items
-                } else if (parsed && typeof parsed === 'object') {
-                    for (const key of ['memories', 'topics', 'relations', 'items', 'data']) {
-                        if (Array.isArray(parsed[key])) {
-                            const items = parsed[key]
-                                .map(x => (typeof x === 'string' ? x : x?.content || x?.text || x?.memory))
-                                .filter(Boolean)
-                            if (items.length) return items
-                        }
-                    }
-                }
-            } catch {}
-        }
-        return null
-    })()
-    if (jsonPayload && jsonPayload.length) {
-        const cleaned = jsonPayload
-            .map(x => String(x).trim())
-            .filter(x => x && !/^(Final|Need|Let me|I |The |Consider|Wait|Okay|Sure|Output|We )/i.test(x))
-        if (cleaned.length) return [...new Set(cleaned)]
-    }
-
     let lines = text.split(/\r?\n/)
     if (text.startsWith('[')) {
         try {
@@ -770,9 +734,8 @@ class MemorySummarizer {
                 }
             }
 
-            // 图谱提取需要 3 条以上消息；且要显式开启（默认关，避免每次总结白跑 2 次 LLM）
-            const graphEnabled = config.get('memory.knowledgeGraphExtraction') === true
-            const graphReady = graphEnabled && Array.isArray(messages) && messages.length >= 3
+            // 图谱提取需要 3 条以上消息，对话才刚起步时跳过，避免每轮空跑
+            const graphReady = Array.isArray(messages) && messages.length >= 3
             if (graphReady) {
                 try {
                     const { knowledgeGraphExtractor } = await import('../storage/KnowledgeGraphExtractor.js')

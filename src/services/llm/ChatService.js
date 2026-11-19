@@ -6,9 +6,6 @@
 
 import { chatLogger } from '../../core/utils/logger.js'
 const logger = chatLogger
-
-// 按需搜索冷却记录（conversationId -> 上次搜索时间）
-const searchCooldownMap = new Map()
 import { LlmService } from './LlmService.js'
 import { imageService } from '../media/ImageService.js'
 import { contextManager, buildGroupEnvironmentPrompt, AUTO_CLEAN_NOTICE } from './ContextManager.js'
@@ -18,7 +15,7 @@ import config from '../../../config/config.js'
 import { getAllTools, setToolContext } from '../../core/utils/toolAdapter.js'
 import { presetManager } from '../preset/PresetManager.js'
 import { memoryManager } from '../storage/MemoryManager.js'
-import { buildMemoryBlock, buildMemoryCatalog, buildKnowledgeGraphBlock, getMemoryToolGuides } from './MemoryContextAssembly.js'
+import { buildMemoryBlock, buildKnowledgeGraphBlock, getMemoryToolGuides } from './MemoryContextAssembly.js'
 import { getScopeManager } from '../scope/ScopeManager.js'
 import { databaseService } from '../storage/DatabaseService.js'
 import {
@@ -66,74 +63,6 @@ const ensureScopeManager = async () => {
  * })
  * ```
  */
-/**
- * 滞回裁剪：只有超过 hard 才裁，且一次裁到 soft。
- *
- * 不用「每轮裁到固定预算」的原因：那样每轮都会丢掉最旧一条，
- * messages 前缀每轮都变，上游 prompt 缓存直接失效（实测命中率只剩 3 成）。
- */
-function trimHistoryStable(list, soft = 1800, hard = 3200) {
-    if (!Array.isArray(list) || list.length === 0) return list
-    const textOf = item => {
-        const c = item?.content
-        if (typeof c === 'string') return c
-        if (Array.isArray(c)) return c.map(p => p?.text || '').join('')
-        return ''
-    }
-    const total = list.reduce((a, m) => a + textOf(m).length, 0)
-    if (total <= hard) return list
-    const out = []
-    let used = 0
-    for (let i = list.length - 1; i >= 0; i--) {
-        const len = textOf(list[i]).length
-        if (out.length > 0 && used + len > soft) break
-        out.unshift(list[i])
-        used += len
-    }
-    return out
-}
-
-/** 单条历史消息超过 maxChars 就截断，避免一条长文把上下文撑爆 */
-function capHistoryMessageLength(list, maxChars = 800) {
-    if (!Array.isArray(list)) return list
-    const capText = text => (text.length > maxChars ? text.slice(0, maxChars) + '…' : text)
-    return list.map(msg => {
-        const content = msg?.content
-        if (typeof content === 'string') return { ...msg, content: capText(content) }
-        if (Array.isArray(content)) {
-            return {
-                ...msg,
-                content: content.map(part =>
-                    part && typeof part === 'object' && typeof part.text === 'string'
-                        ? { ...part, text: capText(part.text) }
-                        : part
-                )
-            }
-        }
-        return msg
-    })
-}
-
-/** 按字符预算从旧到新裁剪历史，防止长对话把上下文撑爆 */
-function trimHistoryByChars(list, budget = 4000) {
-    if (!Array.isArray(list) || list.length === 0) return list
-    const textOf = item => {
-        const c = item?.content
-        if (typeof c === 'string') return c
-        if (Array.isArray(c)) return c.map(p => p?.text || '').join('')
-        return ''
-    }
-    const out = []
-    let used = 0
-    for (let i = list.length - 1; i >= 0; i--) {
-        const len = textOf(list[i]).length
-        if (out.length > 0 && used + len > budget) break
-        out.unshift(list[i])
-        used += len
-    }
-    return out
-}
-
 export class ChatService {
     /**
      * 发送聊天消息
@@ -227,7 +156,7 @@ export class ChatService {
             skipPersona = false, // 跳过人设获取（用于总结等场景）
             temperature: overrideTemperature, // 覆盖温度参数
             maxTokens: overrideMaxTokens, // 覆盖最大token参数
-            source = options.mode === 'bym' ? 'bym' : options.mode === 'game' ? 'game' : 'chat' // 统计来源标签（chat/game/bym等）
+            source = 'chat' // 统计来源标签（chat/game/bym等）
         } = options
 
         // 调试信息收集
@@ -323,19 +252,7 @@ export class ChatService {
             try {
                 // 如果是 image_url 类型对象（来自 messageParser）
                 if (imageRef && typeof imageRef === 'object') {
-                    let inlineImage = normalizeInlineImageContent(imageRef)
-                    // 兼容 {type:'image', url:'<裸base64>'} 这种形式（沙盒/部分适配器会这样给）
-                    if (!inlineImage && imageRef.type === 'image') {
-                        const candidate = imageRef.url || imageRef.file || imageRef.image
-                        if (
-                            typeof candidate === 'string' &&
-                            (candidate.startsWith('base64://') ||
-                                candidate.startsWith('base64:') ||
-                                /^[A-Za-z0-9+/]{100,}={0,2}$/.test(candidate.replace(/\s+/g, '')))
-                        ) {
-                            inlineImage = normalizeInlineImageContent({ ...imageRef, image: candidate })
-                        }
-                    }
+                    const inlineImage = normalizeInlineImageContent(imageRef)
                     if (inlineImage) {
                         messageContent.push(inlineImage)
                         continue
@@ -456,20 +373,11 @@ export class ChatService {
         }
         // 如果 skipHistory 为 true，跳过历史记录（用于事件响应等不需要上下文的场景）
         // 增加历史记录数量以改善上下文理解，从20条增加到30条
-        const historyLimit = config.get('context.autoContext.maxHistoryMessages') || 30
+        const historyLimit =
+            Number(options.historyLimit) > 0
+                ? Number(options.historyLimit)
+                : config.get('context.autoContext.maxHistoryMessages') || 30
         let history = skipHistory ? [] : await contextManager.getContextHistory(conversationId, historyLimit)
-
-        // 按 token 轮换：旧对话压成四栏摘要，只留最近几条原文
-        let rotationBlock = ''
-        try {
-            const { contextRotation } = await import('./ContextRotation.js')
-            rotationBlock = await contextRotation.maybeRotate({ conversationId, history, groupId })
-            if (rotationBlock) {
-                history = await contextManager.getContextHistory(conversationId, historyLimit)
-            }
-        } catch (err) {
-            globalThis.logger?.warn?.('[Chat] 上下文轮换失败:', err.message)
-        }
 
         // 获取默认预设配置
         await presetManager.init()
@@ -567,71 +475,6 @@ export class ChatService {
                 userId: event?.user_id || userId
             })
             allTools = applySkillToolConstraints(allTools, skillToolConstraints)
-            // 群聊里别让模型用"发私聊/发主人"工具回复，否则会把回复发到私聊
-            if (event?.group_id) {
-                const privateOnly = new Set([
-                    'send_to_master',
-                    'send_private_message',
-                    'send_private_msg',
-                    'send_msg_to_user',
-                    // 聊天回复会把 @名字 转成真实 at，工具再发一次就会重复
-                    'at_user',
-                    'send_message',
-                    'send_group_message',
-                    'send_msg',
-                    'send_group_msg'
-                ])
-                allTools = allTools.filter(t => !privateOnly.has(t?.name))
-            }
-            // 按意图裁剪工具类别：减少每次请求的 schema token
-            try {
-                if (config.get('tools.intentFilter') !== false) {
-                    const msg = String(message || event?.msg || '')
-                    const cats = new Set()
-                    if (/搜|查一下|查询|新闻|最新|资料|百科|天气/.test(msg)) ['web', 'search', 'utils'].forEach(c => cats.add(c))
-                    if (/画|绘图|生图|表情包|自拍|梗图|修图/.test(msg)) ['imageGen', 'emoji', 'media'].forEach(c => cats.add(c))
-                    if (/禁言|踢|管理员|头衔|群公告|撤回/.test(msg)) ['admin', 'groupStats'].forEach(c => cats.add(c))
-                    if (/提醒|定时|闹钟|几点|叫我|记得|倒计时/.test(msg)) ['schedule', 'reminder'].forEach(c => cats.add(c))
-                    if (/搜索|搜一下|百度|谷歌/.test(msg)) ['web', 'search'].forEach(c => cats.add(c))
-                    if (/语音|唱歌|音频|音乐/.test(msg)) ['voice', 'media'].forEach(c => cats.add(c))
-                    // 工具名 -> 类别映射（来自 MCP 内置分类）
-                    if (!globalThis.__toolCategoryMap) {
-                        try {
-                            const { getCategoryInfo } = await import('../../mcp/tools/index.js')
-                            const infos = await getCategoryInfo()
-                            const map = new Map()
-                            for (const info of infos) {
-                                for (const t of info.tools || []) map.set(t.name, info.key)
-                            }
-                            globalThis.__toolCategoryMap = map
-                        } catch {
-                            globalThis.__toolCategoryMap = new Map()
-                        }
-                    }
-                    const nameToCat = globalThis.__toolCategoryMap
-                    // 基础工具白名单：日常聊天只需要这些
-                    const baseTools = new Set([
-                        'reply_current_message',
-                        'at_user',
-                        'get_current_time',
-                        'get_group_info',
-                        'get_group_member_list',
-                        'get_sender_info',
-                        'search_memory',
-                        'save_memory',
-                        'get_memory'
-                    ])
-                    const before = allTools.length
-                    allTools = allTools.filter(t => {
-                        if (baseTools.has(t.name)) return true
-                        const cat = t.category || nameToCat.get(t.name)
-                        return !!cat && cats.has(cat)
-                    })
-                    logger.mark(`[ChatService] 意图裁剪工具: ${before} -> ${allTools.length}`)
-                }
-            } catch (err) {
-                logger.debug('[ChatService] 工具意图裁剪失败:', err.message)
-            }
             logger.debug(`[ChatService] 加载工具: ${allTools.length}个`)
         } else if (toolApprovalMode === 'ask') {
             logger.debug('[ChatService] ask 模式：不向模型暴露工具')
@@ -737,10 +580,43 @@ export class ChatService {
                 channel: targetChannel
             })
         }
+        // 工具延迟加载：开启后只暴露核心工具 + tool_search，命中后由 tool_search 自动注入
+        let exposedTools = actualTools
+        let toolSearchState = null
+        try {
+            const { getToolSearchSettings } = await import('../search/SearchSettings.js')
+            const tsSettings = getToolSearchSettings()
+            if (tsSettings.enabled && actualTools.length > 0) {
+                const toolName = tool => tool?.function?.name || tool?.name || ''
+                const nameSet = new Set(actualTools.map(toolName))
+                if (nameSet.has('tool_search')) {
+                    const coreNames = new Set(tsSettings.coreTools || [])
+                    coreNames.add('tool_search')
+                    const coreTools = actualTools.filter(tool => coreNames.has(toolName(tool)))
+                    if (coreTools.length > 0 && coreTools.length < actualTools.length) {
+                        exposedTools = coreTools
+                        toolSearchState = {
+                            candidates: actualTools,
+                            loaded: new Set(coreTools.map(toolName)),
+                            maxResults: tsSettings.maxResults,
+                            autoLoad: tsSettings.autoLoad
+                        }
+                        logger.debug(
+                            `[ChatService] 工具延迟加载: 暴露 ${coreTools.length}/${actualTools.length} 个核心工具`
+                        )
+                    }
+                } else {
+                    logger.debug('[ChatService] 已开启工具延迟加载但缺少 tool_search，保持全量工具')
+                }
+            }
+        } catch (err) {
+            logger.debug('[ChatService] 工具延迟加载初始化失败:', err.message)
+        }
+
         const configuredToolChoice = resolveToolChoiceForChannel(channel)
         const clientOptions = {
             enableTools: actualEnableTools,
-            preSelectedTools: actualTools.length > 0 ? actualTools : null,
+            preSelectedTools: exposedTools.length > 0 ? exposedTools : null,
             ...(configuredToolChoice ? { toolChoice: configuredToolChoice } : {}),
             ...thinkingOptions,
             adapterType: adapterType,
@@ -750,7 +626,8 @@ export class ChatService {
             groupId,
             userId: event?.user_id || userId,
             conversationId,
-            toolApprovalMode
+            toolApprovalMode,
+            ...(toolSearchState ? { toolSearchState } : {})
         }
 
         // 输出模型选择摘要
@@ -961,33 +838,17 @@ export class ChatService {
             }
             logger.debug(`[ChatService] 前缀人格应用后systemPrompt长度: ${systemPrompt.length}`)
         }
-        // 动态上下文（说话人/记忆/群记忆/知识图谱）不再拼进 system prompt：
-        // system 前缀保持稳定，上游 prompt 缓存才能命中；这些内容每轮都变，放进本轮用户消息。
-        const dynamicContext = []
-        // 优先级最高的上下文（前情摘要、实时搜索），不参与 600 字软上限
-        const priorityContext = []
-        // 调用方额外背景（bym 的群聊记录等）：放优先级上下文，不混进当前用户消息
-        if (options.extraContext) priorityContext.push(String(options.extraContext))
-        if (rotationBlock) priorityContext.push(rotationBlock)
         if (config.get('memory.enabled') && !skipPersona) {
             try {
-                // 只有「问过去的事」才展开记忆正文，其余只给目录，省 token
-                const asksPast = typeof message === 'string' &&
-                    /还记|记得|之前|上次|以前|我说过|我跟你说|我是谁|我叫|忘|聊过|说过/.test(message)
-                const memoryContext = asksPast
-                    ? await buildMemoryBlock({
-                          userId,
-                          cleanUserId,
-                          groupId: groupId ? String(groupId) : null,
-                          message: message || '',
-                          event
-                      })
-                    : await buildMemoryCatalog({
-                          cleanUserId,
-                          groupId: groupId ? String(groupId) : null
-                      })
+                const memoryContext = await buildMemoryBlock({
+                    userId,
+                    cleanUserId,
+                    groupId: groupId ? String(groupId) : null,
+                    message: message || '',
+                    event
+                })
                 if (memoryContext) {
-                    dynamicContext.push(String(memoryContext).slice(0, 500))
+                    systemPrompt += memoryContext
                     logger.debug(`[ChatService] 已添加记忆上下文到系统提示 (${memoryContext.length} 字符)`)
                     if (debugInfo) {
                         debugInfo.memory.userMemory = {
@@ -1000,50 +861,6 @@ export class ChatService {
                     logger.debug(`[ChatService] 无用户记忆`)
                     if (debugInfo) {
                         debugInfo.memory.userMemory = { hasMemory: false }
-                    }
-                }
-                // 深层记忆：按关键词从库里捞最多 3 条，补在浅层目录后面
-                if (!asksPast && typeof message === 'string' && message.trim().length >= 2) {
-                    try {
-                        const seen = new Set()
-                        const picked = []
-                        const pushHits = list => {
-                            for (const m of list || []) {
-                                const t = String(m?.content || '').trim()
-                                if (!t || seen.has(t)) continue
-                                seen.add(t)
-                                picked.push(t.length > 60 ? t.slice(0, 60) + '…' : t)
-                                if (picked.length >= 3) return
-                            }
-                        }
-                        // 把消息拆成关键词再检索：直接拿整句 LIKE 基本匹配不到
-                        const stopWords = /^(什么|怎么|可以|还能|玩吗|这个|那个|今天|现在|最近|就是|不是|没有|我们|你们|他们|一下|真的|已经|一个|这样|那样)$/
-                        const keywords = []
-                        for (const seg of String(message).split(/[^\u4e00-\u9fa5A-Za-z0-9]+/)) {
-                            const t = seg.trim()
-                            if (!t) continue
-                            if (/^[\u4e00-\u9fa5]+$/.test(t)) {
-                                for (let n = Math.min(4, t.length); n >= 2; n--) {
-                                    for (let i = 0; i + n <= t.length; i++) {
-                                        const w = t.slice(i, i + n)
-                                        if (!stopWords.test(w) && !keywords.includes(w)) keywords.push(w)
-                                    }
-                                }
-                            } else if (t.length >= 2) keywords.push(t)
-                            if (keywords.length >= 24) break
-                        }
-                        for (const kw of keywords.slice(0, 8)) {
-                            pushHits(databaseService.searchMemories(cleanUserId, kw, 2))
-                            if (groupId) {
-                                pushHits(databaseService.searchMemories(`group:${groupId}:user:${cleanUserId}`, kw, 2))
-                            }
-                            if (picked.length >= 3) break
-                        }
-                        if (picked.length > 0) {
-                            dynamicContext.push(`\n【相关记忆】${picked.join('；')}`.slice(0, 220))
-                        }
-                    } catch (err) {
-                        logger.debug('[ChatService] 相关记忆检索失败:', err.message)
                     }
                 }
                 if (groupId && config.get('memory.groupContext.enabled')) {
@@ -1063,7 +880,7 @@ export class ChatService {
                             parts.push(`群友关系：${groupMemory.relations.join('；')}`)
                         }
                         if (parts.length > 0) {
-                            dynamicContext.push('\n【群聊记忆】\n' + parts.join('\n').slice(0, 400))
+                            systemPrompt += '\n【群聊记忆】\n' + parts.join('\n') + '\n'
                             logger.debug(`[ChatService] 已添加群聊记忆上下文`)
                         }
                         if (debugInfo) {
@@ -1081,14 +898,14 @@ export class ChatService {
                 logger.warn('[ChatService] 获取记忆上下文失败:', err.message)
             }
         }
-        if (config.get('memory.enabled') && !skipPersona && config.get('memory.knowledgeGraph') !== false) {
+        if (config.get('memory.enabled') && !skipPersona) {
             try {
                 const graphContext = await buildKnowledgeGraphBlock({
                     userId: String(cleanUserId),
                     groupId: groupId ? String(groupId) : null
                 })
                 if (graphContext) {
-                    dynamicContext.push(graphContext)
+                    systemPrompt += graphContext
                     logger.debug(`[ChatService] 已添加知识图谱上下文 (${graphContext.length} 字符)`)
                     if (debugInfo) {
                         debugInfo.memory.knowledgeGraph = {
@@ -1170,24 +987,41 @@ export class ChatService {
             }
             return true
         })
+        // 历史里的前情块不再注入（前情每轮现取），避免历史越带越重
+        const stripPreTriggerBlock = text =>
+            String(text || '')
+                .replace(/\n*【群聊消息（仅参考[^\n]*】[\s\S]*$/, '')
+                .trimEnd()
+        validHistory = validHistory
+            .map(msg => {
+                if (!msg?.content) return msg
+                if (typeof msg.content === 'string') {
+                    const t = stripPreTriggerBlock(msg.content)
+                    return t ? { ...msg, content: t } : null
+                }
+                if (Array.isArray(msg.content)) {
+                    const parts = msg.content
+                        .map(p => {
+                            if (p?.type !== 'text') return p
+                            let t = stripPreTriggerBlock(p.text)
+                            if (t.length > 300) t = t.slice(0, 300) + '…'
+                            return { ...p, text: t }
+                        })
+                        .filter(p => p?.type !== 'text' || String(p.text || '').trim())
+                    return parts.length ? { ...msg, content: parts } : null
+                }
+                return msg
+            })
+            .filter(Boolean)
+
         const groupContextSharingEnabled = config.get('context.groupContextSharing') !== false
         const isolation = contextManager.getIsolationMode()
         if (groupId && !isolation.groupUserIsolation && groupContextSharingEnabled) {
-            // 按字符预算裁剪历史（约 4000 字），再带上每条消息的发送时间
-            // 轮换开启时由 token 上限接管，这里只做极端兜底
-            const rotationEnabled = (config.get('context.rotation') || {}).enabled !== false
-            validHistory = rotationEnabled
-                ? trimHistoryStable(validHistory, 12000, 20000)
-                : trimHistoryStable(validHistory, 3000, 6000)
-            validHistory = capHistoryMessageLength(validHistory, 800)
-            validHistory = contextManager.buildLabeledContext(validHistory, null, { includeTimestamp: true })
+            validHistory = contextManager.buildLabeledContext(validHistory)
 
             // 当前用户信息
-            const currentUserLabel =
-                event?.sender?.card || event?.sender?.nickname || options.senderName || `用户${userId}`
+            const currentUserLabel = event?.sender?.card || event?.sender?.nickname || `用户${userId}`
             const currentUserUin = event?.user_id || userId
-            // 「当前说话人」不再单独注入：用户消息本身已经带 [群名片(QQ)] 前缀，
-            // 再写一遍纯属重复，而且是每轮都变的未命中 token
 
             // 给当前消息也添加用户标签
             userMessage.content = contextManager.addUserLabelToContent(
@@ -1195,11 +1029,6 @@ export class ChatService {
                 currentUserLabel,
                 currentUserUin
             )
-            // 「现在几点」放进本轮用户消息：系统提示逐分钟变化会破坏上游 prompt 缓存
-            try {
-                const nowStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-                userMessage.content = contextManager.prependTimeToContent(userMessage.content, nowStr)
-            } catch {}
 
             // 获取群信息
             const groupName = event?.group_name || event?.group?.name || ''
@@ -1229,71 +1058,6 @@ export class ChatService {
                 logger.debug(`[ChatService] 群上下文传递已禁用，不携带群聊历史`)
             }
         }
-        // 系统提示体积硬上限：记忆/知识库异常膨胀时截断，避免 token 失控
-        const MAX_SYSTEM_CHARS = 4000
-        if (systemPrompt && systemPrompt.length > MAX_SYSTEM_CHARS) {
-            logger.debug(
-                `[ChatService] 系统提示过长（${systemPrompt.length} 字符），截断到 ${MAX_SYSTEM_CHARS}`
-            )
-            systemPrompt = systemPrompt.slice(0, MAX_SYSTEM_CHARS) + '\n…（后续设定已省略）'
-        }
-        // 按需搜索：消息里出现「搜一下/查一下/最新/新闻」等触发词时先搜一轮，
-        // 结果放进本轮上下文。没命中就完全不请求搜索接口，零开销。
-        try {
-            if (!skipPersona && options.mode === 'chat' && typeof message === 'string') {
-                const searchCfg = config.get('tools.onDemandSearch') || {}
-                const cooldownMs = Math.max(0, Number(searchCfg.cooldownSeconds ?? 300)) * 1000
-                const lastSearchAt = searchCooldownMap.get(conversationId) || 0
-                // cooldownSeconds=0 表示不限制间隔
-                if (cooldownMs === 0 || Date.now() - lastSearchAt >= cooldownMs) {
-                    const { deepseekSearch } = await import('../search/DeepSeekSearch.js')
-                    const searchBlock = await deepseekSearch.buildContextBlock(message)
-                    if (searchBlock) {
-                        priorityContext.unshift(searchBlock)
-                        searchCooldownMap.set(conversationId, Date.now())
-                        logger.mark(`[Chat] 已注入实时搜索结果 ${searchBlock.length} 字`)
-                    }
-                } else {
-                    logger.debug('[Chat] 搜索冷却中，跳过本轮搜索')
-                }
-            }
-        } catch (err) {
-            logger.warn('[ChatService] 按需搜索失败:', err.message)
-        }
-
-        // 最近群事件（戳一戳/禁言/撤回等）：让模型知道群里刚发生了什么
-        if (groupId) {
-            try {
-                const { groupEventFeed } = await import('../events/GroupEventFeed.js')
-                const eventBlock = groupEventFeed.buildBlock(String(groupId))
-                if (eventBlock) {
-                    priorityContext.push(eventBlock)
-                    logger.debug(`[ChatService] 注入群事件 ${eventBlock.length} 字`)
-                }
-            } catch (err) {
-                logger.debug('[ChatService] 群事件注入失败:', err.message)
-            }
-        }
-
-        // 动态上下文体积控制（优先级：说话人 > 记忆 > 群记忆 > 知识图谱），并入本轮用户消息
-        const MAX_DYNAMIC_CHARS = 600
-        if (dynamicContext.length > 0 || priorityContext.length > 0) {
-            let dynamicText = priorityContext.join('').slice(0, 800)
-            dynamicContext.forEach((block, idx) => {
-                if (!block) return
-                // 第 0 块是搜索/最优先内容，允许突破软上限
-                if (idx > 0 && dynamicText.length + block.length > MAX_DYNAMIC_CHARS) return
-                dynamicText += block
-            })
-            if (config.get('context.dynamicContext') !== false && dynamicText.trim()) {
-                const wrap = `【本轮上下文（仅参考，不用复述）】${dynamicText}\n【以上是上下文，下面才是用户的话】\n`
-                if (typeof userMessage.content === 'string') {
-                    userMessage.content = wrap + userMessage.content
-                } else if (Array.isArray(userMessage.content)) {
-                    userMessage.content = [{ type: 'text', text: wrap }, ...userMessage.content]
-                }
-            }
-        }
         let messages = []
         const shouldDisableSystemPrompt = currentPreset?.disableSystemPrompt === true
         const baseSystemPrompt = systemPrompt
@@ -1312,6 +1076,52 @@ export class ChatService {
         } else if (shouldDisableSystemPrompt) {
             logger.debug(`[ChatService] 预设已禁用系统提示词，不发送 system 消息`)
         }
+        // 把最近群聊（含群友 @ 别人的消息）附到当前用户消息里，便于 AI 了解上下文
+        if (groupId && config.get('context.groupMessageFeed') === true) {
+            try {
+                const { buildGroupMessageFeed } = await import('../context/GroupMessageFeed.js')
+                const feedBlock = buildGroupMessageFeed(groupId)
+                if (feedBlock) {
+                    if (typeof userMessage.content === 'string') {
+                        userMessage.content += '\n\n' + feedBlock
+                    } else if (Array.isArray(userMessage.content)) {
+                        userMessage.content.push({ type: 'text', text: '\n\n' + feedBlock })
+                    }
+                }
+            } catch (err) {
+                logger.debug('[ChatService] 群消息上下文注入失败:', err.message)
+            }
+        }
+        let preTriggerText = ''
+        // 触发前群聊：把触发消息之前的 N 条群消息补给模型（bym 随机插话不需要前情）
+        if (groupId && String(options?.mode || '') !== 'bym') {
+            try {
+                const preCfg = config.get('context.preTriggerMessages') || {}
+                if (preCfg.enabled === true) {
+                    const { buildPreTriggerBlock } = await import('../context/GroupMessageFeed.js')
+                    const botObj = event?.bot || globalThis.Bot
+                    const block = buildPreTriggerBlock(groupId, {
+                        beforeTs: Date.now(),
+                        excludeMessageId: event?.message_id,
+                        count: preCfg.count,
+                        maxMinutes: preCfg.maxMinutes,
+                        botName: preCfg.botName || '',
+                        botQQ: event?.self_id || botObj?.uin || ''
+                    })
+                    if (block) {
+                        preTriggerText = block
+                        if (typeof userMessage.content === 'string') {
+                            userMessage.content += '\n\n' + block
+                        } else if (Array.isArray(userMessage.content)) {
+                            userMessage.content.push({ type: 'text', text: '\n\n' + block })
+                        }
+                        logger.debug(`[ChatService] 已注入触发前群聊 ${block.length} 字符`)
+                    }
+                }
+            } catch (err) {
+                logger.debug('[ChatService] 触发前群聊注入失败:', err.message)
+            }
+        }
         messages.push(...validHistory, userMessage)
 
         /* 字符上限检查 */
@@ -1319,11 +1129,7 @@ export class ChatService {
         enforceMaxCharacters(messages, maxCharacters, 'ChatService')
 
         const hasTools = client.tools && client.tools.length > 0
-        // 带图请求强制走非流式：流式分支对图片内容块处理不完整，模型会看不到图
-        const hasImageParts = Array.isArray(userMessage.content)
-            ? userMessage.content.some(c => c && (c.type === 'image' || c.type === 'image_url'))
-            : false
-        const useStreaming = !hasImageParts && (stream || channelStreaming.enabled === true)
+        const useStreaming = stream || channelStreaming.enabled === true
         logger.debug(
             `[ChatService] Request: model=${llmModel}, stream=${useStreaming}, tools=${hasTools ? client.tools.length : 0}, channelStreaming=${JSON.stringify(channelStreaming)}`
         )
@@ -1771,6 +1577,30 @@ export class ChatService {
                 memoryManager
                     .extractMemoryFromConversation(userId, message, textContent, { groupId })
                     .catch(err => logger.warn('[ChatService] Automatic memory extraction failed:', err.message))
+            }
+            // 前情摘要写入历史 + 深度压缩检查
+            try {
+                const preCfg2 = config.get('context.preTriggerMessages') || {}
+                if (preTriggerText && preCfg2.summary?.enabled !== false && conversationId) {
+                    const plainText = String(preTriggerText).replace(/^【群聊消息[^】]*】\n?/, '')
+                    contextManager
+                        .appendSummaryToHistory(conversationId, plainText, {
+                            marker: '【前情摘要】',
+                            maxTokens: preCfg2.summary?.maxTokens || 300
+                        })
+                        .catch(err => logger.warn('[ChatService] 写入前情摘要失败:', err.message))
+                }
+                const dcfg = config.get('context.deepCompact') || {}
+                if (dcfg.enabled !== false && conversationId) {
+                    const total = contextManager.countHistory(conversationId)
+                    if (total > (Number(dcfg.triggerMessages) || 600)) {
+                        contextManager
+                            .deepCompactHistory(conversationId)
+                            .catch(err => logger.warn('[ChatService] 深度压缩失败:', err.message))
+                    }
+                }
+            } catch (err) {
+                logger.debug('[ChatService] 历史摘要/压缩检查失败:', err.message)
             }
             const voiceConfig = config.get('features.voiceReply')
             if (voiceConfig?.enabled && event && event.reply) {

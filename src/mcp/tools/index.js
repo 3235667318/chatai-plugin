@@ -247,7 +247,7 @@ export async function getAllTools(options = {}) {
                 seenNames.set(tool.name, category)
             }
         }
-        allTools.push(...tools.map(tool => ({ ...tool, category })))
+        allTools.push(...tools)
     }
 
     // 同名工具会让暴露给模型的 schema（Map.set 取最后一个）与实际执行的 handler
