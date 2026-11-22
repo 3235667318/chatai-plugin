@@ -1,5 +1,5 @@
 import config from '../config/config.js'
-import { cleanCQCode, segment } from '../src/utils/messageParser.js'
+import { cleanCQCode, segment, renderSegmentsToText, parseUserMessage } from '../src/utils/messageParser.js'
 import { isMessageProcessed, markMessageProcessed, isSelfMessage } from '../src/utils/messageDedup.js'
 import { renderService } from '../src/services/media/RenderService.js'
 import { ensureScopeManager } from '../src/services/scope/ScopeManager.js'

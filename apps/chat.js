@@ -1,5 +1,5 @@
 import config from '../config/config.js'
-import { parseUserMessage, segment } from '../src/utils/messageParser.js'
+import { parseUserMessage, segment, buildEventTextWithAt } from '../src/utils/messageParser.js'
 import { isDebugEnabled } from './Commands.js'
 import {
     recordSentMessage,
