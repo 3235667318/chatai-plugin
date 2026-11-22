@@ -1,0 +1,332 @@
+{
+ "34": {
+  "class_type": "bsk_UNETLoader",
+  "inputs": {
+   "unet_name": "Krea2\\Krea2-Turbo-bf16.safetensors",
+   "weight_dtype": "default",
+   "model_meta": "{\"version\":1,\"file\":\"Krea2-Turbo-bf16.safetensors\",\"alias\":\"\",\"url\":\"https://www.modelscope.cn/models/junlebao/Krea2-Turbo-fp16/resolve/20260729202717/Krea2-Turbo-bf16.safetensors?view=false\",\"home\":\"https://www.modelscope.cn/models/junlebao/Krea2-Turbo-fp16\"}"
+  }
+ },
+ "35": {
+  "class_type": "bsk_CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen3vl_4b_heretic_int8_convrot.safetensors",
+   "type": "krea2",
+   "device": "default",
+   "model_meta": "{\"version\":1,\"file\":\"qwen3vl_4b_heretic_int8_convrot.safetensors\",\"alias\":\"\",\"url\":\"https://modelscope.cn/models/tuanlai/Qwen3VL-4b-heretic/resolve/master/qwen3vl_4b_heretic_int8_convrot.safetensors?view=false\",\"home\":\"https://www.modelscope.cn/models/tuanlai/Qwen3VL-4b-heretic\"}"
+  }
+ },
+ "36": {
+  "class_type": "bsk_VAELoader",
+  "inputs": {
+   "vae_name": "qwen_image_vae.safetensors",
+   "model_meta": "{\"version\":1,\"file\":\"qwen_image_vae.safetensors\",\"alias\":\"\",\"url\":\"https://modelscope.cn/models/circlestone-labs/Anima/resolve/master/split_files/vae/qwen_image_vae.safetensors\",\"home\":\"https://modelscope.cn/models/circlestone-labs/Anima/resolve/master/split_files/vae/qwen_image_vae.safetensors\"}"
+  }
+ },
+ "37": {
+  "class_type": "bsk_MultiLoraLoaderWithPath",
+  "inputs": {
+   "model": [
+    "34",
+    0
+   ],
+   "clip": [
+    "35",
+    0
+   ],
+   "lora_text": "master=on",
+   "lora_meta": ""
+  }
+ },
+ "22": {
+  "class_type": "BSK_LoadImage",
+  "inputs": {
+   "image": "example.png",
+   "crop_params": "0,0,0,0,0,896,1536",
+   "vae": [
+    "36",
+    0
+   ],
+   "output_empty_latent": true,
+   "redraw_mode": false,
+   "divisible_by_32": false
+  }
+ },
+ "21": {
+  "class_type": "BSK_ParamSet",
+  "inputs": {
+   "title1": "步数",
+   "value1": "8",
+   "type1": "INT",
+   "title2": "二采降噪",
+   "value2": "0.39",
+   "type2": "FLOAT",
+   "title3": "二采步数",
+   "value3": "8",
+   "type3": "INT",
+   "title4": "二采放大倍率",
+   "value4": "1.5",
+   "type4": "FLOAT",
+   "title5": "是否二采",
+   "value5": "true",
+   "type5": "BOOLEAN",
+   "title6": "LLM反推",
+   "value6": "false",
+   "type6": "BOOLEAN",
+   "title7": "图生图↔文生图",
+   "value7": "true",
+   "type7": "BOOLEAN",
+   "title8": "图生图降噪",
+   "value8": "0.66",
+   "type8": "FLOAT",
+   "title9": "",
+   "value9": "",
+   "type9": "INT",
+   "title10": "",
+   "value10": "",
+   "type10": "INT"
+  }
+ },
+ "31": {
+  "class_type": "RandomSeedNode",
+  "inputs": {
+   "seed_str": "0",
+   "trigger": 5,
+   "auto_generate": true
+  }
+ },
+ "29": {
+  "class_type": "MultiLineStringEditor",
+  "inputs": {
+   "text": "",
+   "separator": " ",
+   "strip_newlines": false
+  }
+ },
+ "26": {
+  "class_type": "MultiLineStringEditor",
+  "inputs": {
+   "text": "",
+   "separator": " ",
+   "strip_newlines": false
+  }
+ },
+ "41": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "clip": [
+    "37",
+    1
+   ],
+   "text": [
+    "29",
+    0
+   ]
+  }
+ },
+ "42": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "clip": [
+    "37",
+    1
+   ],
+   "text": [
+    "26",
+    0
+   ]
+  }
+ },
+ "56": {
+  "class_type": "PrimitiveFloat",
+  "inputs": {
+   "value": 1.0
+  }
+ },
+ "55": {
+  "class_type": "ComfySwitchNode",
+  "inputs": {
+   "switch": [
+    "21",
+    6
+   ],
+   "on_false": [
+    "21",
+    7
+   ],
+   "on_true": [
+    "56",
+    0
+   ]
+  }
+ },
+ "57": {
+  "class_type": "bsk_Math",
+  "inputs": {
+   "value": "(1-a)*b",
+   "a": [
+    "55",
+    0
+   ],
+   "b": [
+    "21",
+    0
+   ]
+  }
+ },
+ "18": {
+  "class_type": "KSamplerAdvanced",
+  "inputs": {
+   "model": [
+    "37",
+    0
+   ],
+   "add_noise": "enable",
+   "noise_seed": [
+    "31",
+    0
+   ],
+   "steps": [
+    "21",
+    0
+   ],
+   "cfg": 1,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "41",
+    0
+   ],
+   "negative": [
+    "42",
+    0
+   ],
+   "latent_image": [
+    "22",
+    2
+   ],
+   "start_at_step": [
+    "57",
+    0
+   ],
+   "end_at_step": 10000,
+   "return_with_leftover_noise": "disable"
+  }
+ },
+ "4": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "18",
+    0
+   ],
+   "vae": [
+    "36",
+    0
+   ]
+  }
+ },
+ "30": {
+  "class_type": "LatentUpscaleBy",
+  "inputs": {
+   "samples": [
+    "18",
+    0
+   ],
+   "upscale_method": "nearest-exact",
+   "scale_by": [
+    "21",
+    3
+   ]
+  }
+ },
+ "19": {
+  "class_type": "KSamplerAdvanced",
+  "inputs": {
+   "model": [
+    "37",
+    0
+   ],
+   "add_noise": "enable",
+   "noise_seed": [
+    "31",
+    0
+   ],
+   "steps": [
+    "21",
+    2
+   ],
+   "cfg": 1,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "41",
+    0
+   ],
+   "negative": [
+    "42",
+    0
+   ],
+   "latent_image": [
+    "30",
+    0
+   ],
+   "start_at_step": [
+    "57",
+    0
+   ],
+   "end_at_step": 10000,
+   "return_with_leftover_noise": "disable"
+  }
+ },
+ "14": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "19",
+    0
+   ],
+   "vae": [
+    "36",
+    0
+   ]
+  }
+ },
+ "32": {
+  "class_type": "ComfySwitchNode",
+  "inputs": {
+   "switch": [
+    "21",
+    4
+   ],
+   "on_false": [
+    "4",
+    0
+   ],
+   "on_true": [
+    "14",
+    0
+   ]
+  }
+ },
+ "28": {
+  "class_type": "BSK_SaveImage",
+  "inputs": {
+   "images": [
+    "32",
+    0
+   ],
+   "filename_prefix": "play/krea2_%timestamp%",
+   "save_as_jpg": true,
+   "jpg_quality": 92,
+   "embed_workflow_in_png": true,
+   "save_workflow": false,
+   "save_txt": false,
+   "other_text": "",
+   "denoise_bilateral": false,
+   "denoise_diameter": 9,
+   "denoise_sigma_color": 75,
+   "denoise_sigma_space": 75
+  }
+ }
+}

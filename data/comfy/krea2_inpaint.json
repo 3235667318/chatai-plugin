@@ -1,0 +1,420 @@
+{
+ "1": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "example.png"
+  },
+  "_meta": {
+   "title": "参考图"
+  }
+ },
+ "2": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "1",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": 864,
+   "height": 1536,
+   "crop": "disabled"
+  },
+  "_meta": {
+   "title": "等比缩放"
+  }
+ },
+ "3": {
+  "class_type": "ClothesSegment",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ],
+   "process_res": 512,
+   "mask_blur": 6,
+   "mask_offset": 4,
+   "invert_output": false,
+   "background": "Alpha",
+   "Pants": false,
+   "Skirt": false,
+   "Upper-clothes": false,
+   "Dress": false,
+   "Left-shoe": false,
+   "Right-shoe": false,
+   "Hat": false,
+   "Hair": false,
+   "Bag": false,
+   "Face": false
+  },
+  "_meta": {
+   "title": "目标服装掩码"
+  }
+ },
+ "4": {
+  "class_type": "ClothesSegment",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ],
+   "process_res": 512,
+   "mask_blur": 6,
+   "mask_offset": -4,
+   "invert_output": false,
+   "background": "Alpha",
+   "Background": true
+  },
+  "_meta": {
+   "title": "背景掩码"
+  }
+ },
+ "5": {
+  "class_type": "MaskComposite",
+  "inputs": {
+   "destination": [
+    "3",
+    1
+   ],
+   "source": [
+    "4",
+    1
+   ],
+   "x": 0,
+   "y": 0,
+   "operation": "subtract"
+  },
+  "_meta": {
+   "title": "服装 − 背景"
+  }
+ },
+ "6": {
+  "class_type": "VAEEncodeForInpaint",
+  "inputs": {
+   "pixels": [
+    "2",
+    0
+   ],
+   "vae": [
+    "8",
+    0
+   ],
+   "mask": [
+    "5",
+    0
+   ],
+   "grow_mask_by": 10
+  },
+  "_meta": {
+   "title": "局部重绘 latent"
+  }
+ },
+ "7": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "9",
+    0
+   ],
+   "seed": 0,
+   "steps": 8,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "10",
+    0
+   ],
+   "negative": [
+    "11",
+    0
+   ],
+   "latent_image": [
+    "6",
+    0
+   ],
+   "denoise": 1.0
+  },
+  "_meta": {
+   "title": "局部重绘采样"
+  }
+ },
+ "8": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "qwen_image_vae.safetensors"
+  }
+ },
+ "9": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "Krea2\\Krea2-Turbo-bf16.safetensors",
+   "weight_dtype": "default"
+  }
+ },
+ "10": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "clip": [
+    "12",
+    0
+   ],
+   "text": ""
+  },
+  "_meta": {
+   "title": "重绘内容（插件注入）"
+  }
+ },
+ "11": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {
+   "conditioning": [
+    "10",
+    0
+   ]
+  }
+ },
+ "12": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen3vl_4b_heretic_int8_convrot.safetensors",
+   "type": "krea2",
+   "device": "default"
+  }
+ },
+ "13": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "7",
+    0
+   ],
+   "vae": [
+    "8",
+    0
+   ]
+  }
+ },
+ "18": {
+  "class_type": "ClothesSegment",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ],
+   "process_res": 512,
+   "mask_blur": 10,
+   "mask_offset": 4,
+   "invert_output": false,
+   "background": "Alpha",
+   "Pants": false,
+   "Skirt": false,
+   "Upper-clothes": false,
+   "Dress": false,
+   "Left-shoe": false,
+   "Right-shoe": false,
+   "Hat": false,
+   "Hair": false,
+   "Bag": false,
+   "Face": false
+  },
+  "_meta": {
+   "title": "覆盖用服装掩码（外扩+羽化，吃掉轮廓黑边）"
+  }
+ },
+ "19": {
+  "class_type": "ClothesSegment",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ],
+   "process_res": 512,
+   "mask_blur": 10,
+   "mask_offset": -4,
+   "invert_output": false,
+   "background": "Alpha",
+   "Background": true
+  },
+  "_meta": {
+   "title": "覆盖用背景掩码"
+  }
+ },
+ "20": {
+  "class_type": "MaskComposite",
+  "inputs": {
+   "destination": [
+    "18",
+    1
+   ],
+   "source": [
+    "19",
+    1
+   ],
+   "x": 0,
+   "y": 0,
+   "operation": "subtract"
+  },
+  "_meta": {
+   "title": "覆盖蒙版"
+  }
+ },
+ "21": {
+  "class_type": "ImageCompositeMasked",
+  "inputs": {
+   "destination": [
+    "2",
+    0
+   ],
+   "source": [
+    "13",
+    0
+   ],
+   "x": 0,
+   "y": 0,
+   "resize_source": false,
+   "mask": [
+    "20",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "把重绘结果贴回原图"
+  }
+ },
+ "14": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "21",
+    0
+   ],
+   "vae": [
+    "8",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "统一 pass 入 latent"
+  }
+ },
+ "15": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "9",
+    0
+   ],
+   "seed": 777,
+   "steps": 8,
+   "cfg": 1.0,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "positive": [
+    "10",
+    0
+   ],
+   "negative": [
+    "11",
+    0
+   ],
+   "latent_image": [
+    "14",
+    0
+   ],
+   "denoise": 0.2
+  },
+  "_meta": {
+   "title": "全图统一（低降噪，抹平接缝）"
+  }
+ },
+ "16": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "15",
+    0
+   ],
+   "vae": [
+    "8",
+    0
+   ]
+  }
+ },
+ "17": {
+  "class_type": "BSK_SaveImage",
+  "inputs": {
+   "images": [
+    "24",
+    0
+   ],
+   "filename_prefix": "play/krea2seg_%timestamp%",
+   "save_as_jpg": true,
+   "jpg_quality": 92,
+   "embed_workflow_in_png": false,
+   "save_workflow": false,
+   "save_txt": false,
+   "other_text": "",
+   "denoise_bilateral": false,
+   "denoise_diameter": 9,
+   "denoise_sigma_color": 75,
+   "denoise_sigma_space": 75
+  },
+  "_meta": {
+   "title": "保存"
+  }
+ },
+ "22": {
+  "class_type": "EmptyImage",
+  "inputs": {
+   "width": 864,
+   "height": 1536,
+   "batch_size": 1,
+   "color": 16777215
+  },
+  "_meta": {
+   "title": "目标颜色（插件注入）"
+  }
+ },
+ "23": {
+  "class_type": "ImageBlend",
+  "inputs": {
+   "image1": [
+    "21",
+    0
+   ],
+   "image2": [
+    "22",
+    0
+   ],
+   "blend_factor": 0.7,
+   "blend_mode": "screen"
+  },
+  "_meta": {
+   "title": "按比例混入目标颜色（消除发灰）"
+  }
+ },
+ "24": {
+  "class_type": "ImageCompositeMasked",
+  "inputs": {
+   "destination": [
+    "21",
+    0
+   ],
+   "source": [
+    "23",
+    0
+   ],
+   "x": 0,
+   "y": 0,
+   "resize_source": false,
+   "mask": [
+    "20",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "只在该区域内生效"
+  }
+ }
+}

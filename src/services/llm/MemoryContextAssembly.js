@@ -41,13 +41,40 @@ const TOOL_USAGE_GUIDE = `\n【工具使用】
  * @param {Object|null} [options.event] - 事件对象（传入平铺记忆回退）
  * @returns {Promise<string>} 可拼接进 system prompt 的块；无数据时返回 ''
  */
+/**
+ * 记忆目录：只给「分类 + 前 26 字」，不展开正文。
+ *
+ * 目的与 qqmind 的「标题常驻、正文按需」一致：常规对话不再把全部记忆塞进上下文，
+ * 只有用户问到过去的事（还记得/上次/我说过…）才用 buildMemoryBlock 展开。
+ */
+export async function buildMemoryCatalog({ cleanUserId, groupId } = {}) {
+    try {
+        const { memoryService } = await import('../memory/MemoryService.js')
+        await memoryService.ensureInit?.()
+        const memories = await memoryService.getMemoriesByUser(cleanUserId, {
+            groupId: groupId ? String(groupId) : undefined,
+            limit: 20
+        })
+        if (!Array.isArray(memories) || memories.length === 0) return ''
+        const lines = memories.slice(0, 4).map(memory => {
+            const content = String(memory.content || '').replace(/\s+/g, ' ').trim()
+            const brief = content.length > 16 ? content.slice(0, 16) + '…' : content
+            return `- [${memory.category || '记忆'}] ${brief}`
+        })
+        return `\n\n【记忆目录】共 ${memories.length} 条（只有标题，细节以实际对话为准）\n` + lines.join('\n')
+    } catch (err) {
+        logger.debug('[MemoryContextAssembly] 构建记忆目录失败:', err.message)
+        return ''
+    }
+}
+
 export async function buildMemoryBlock({ userId, cleanUserId, groupId, message, event }) {
     const { memoryService } = await import('../memory/MemoryService.js')
 
     try {
         const structured = await memoryService.buildMemoryContext(cleanUserId, {
             groupId,
-            maxItems: 15,
+            maxItems: 8,
             query: message || ''
         })
         if (structured) {

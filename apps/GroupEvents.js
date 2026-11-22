@@ -16,6 +16,7 @@
  */
 import config from '../config/config.js'
 import { getBotIds } from '../src/utils/messageDedup.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
 import { isGroupFeatureEnabled } from '../src/services/scope/ScopeManager.js'
 import {
     parseBanEvent,
@@ -27,6 +28,8 @@ import {
     checkEventProbability
 } from '../src/utils/eventAdapter.js'
 import { getAIResponse } from '../src/utils/common.js'
+import { segment } from '../src/utils/messageParser.js'
+import { convertAtMentions } from '../src/utils/mentionAt.js'
 import {
     cacheGroupMessage,
     getCachedMessage,
@@ -81,7 +84,8 @@ function getGroupName(e, bot) {
 }
 
 async function sendMessage(bot, groupId, message) {
-    return await sendGroupMessage(bot, groupId, message)
+    // 群事件回复同样要转 @（不经过 apps/chat.js 的发送链）
+    return await sendGroupMessage(bot, groupId, convertAtMentions(message, { bot, groupId, segment }))
 }
 
 /**
@@ -329,6 +333,19 @@ let eventListenersRegistered = false
  */
 async function handleGroupEvent(eventType, e, bot) {
     bot = e?.bot || bot
+    if (isIgnoredBot(e)) return
+
+    // 群事件也遵守聊天黑白名单：非白名单群/黑名单群不响应
+    const eventGroupId = String(e?.group_id || '')
+    const triggerGroup = config.get('trigger.group') || {}
+    const eventWhitelist = (triggerGroup.whitelistGroups || []).map(String)
+    const eventBlacklist = (triggerGroup.blacklistGroups || []).map(String)
+    if (eventGroupId && eventBlacklist.includes(eventGroupId)) return
+    if (eventGroupId && eventWhitelist.length > 0 && !eventWhitelist.includes(eventGroupId)) {
+        logger.debug(`[GroupEvents] 非白名单群 ${eventGroupId}，跳过 ${eventType}`)
+        return
+    }
+
     if (!shouldProcessEvent(e)) return
 
     const configKey = `features.${eventType}.enabled`
@@ -497,6 +514,10 @@ async function handleGroupEvent(eventType, e, bot) {
     if (config.get(`features.${eventType}.aiResponse`) !== false) {
         const prompt = getEventPrompt(eventType, data)
         const aiReply = await getAIResponse(prompt, {
+            // 事件回复由 handler 自己发；开着工具模型会额外调 reply_current_message，一次戳一戳变成好几条消息
+            disableTools: true,
+            event: e,
+            senderName: typeof nickname !== 'undefined' ? nickname : '',
             userId: userId,
             groupId: groupId,
             maxLength: config.get(`features.${eventType}.maxLength`) || 100,

@@ -281,6 +281,19 @@ class ConversationTrackerService {
                 event: null,
                 source: 'conversation-tracker'
             })
+            try {
+                const { statsService } = await import('../stats/StatsService.js')
+                await statsService.recordApiCall({
+                    channelId: delegated.usedChannel?.id || 'conversation-tracker',
+                    channelName: delegated.usedChannel?.name || '会话追踪',
+                    model: delegated.usedModel || trackingModel,
+                    duration: 0,
+                    success: true,
+                    source: '会话追踪',
+                    apiUsage: delegated.usage,
+                    request: { messages: [{ role: 'user', content: String(rawUserContent).slice(0, 200) }], model: trackingModel }
+                })
+            } catch {}
             const response = delegated.response
 
             const answer = (
@@ -444,6 +457,19 @@ ${recentHistory || '(无)'}
                 event: null,
                 source: 'conversation-tracker-batch'
             })
+            try {
+                const { statsService } = await import('../stats/StatsService.js')
+                await statsService.recordApiCall({
+                    channelId: delegated.usedChannel?.id || 'conversation-tracker',
+                    channelName: delegated.usedChannel?.name || '会话追踪',
+                    model: delegated.usedModel || trackingModel,
+                    duration: 0,
+                    success: true,
+                    source: '会话追踪-批量',
+                    apiUsage: delegated.usage,
+                    request: { messages: [{ role: 'user', content: String(batchMessages[1].content).slice(0, 200) }], model: trackingModel }
+                })
+            } catch {}
             const response = delegated.response
 
             let content = (response?.content?.find(c => c.type === 'text')?.text || '').trim() || '{}'

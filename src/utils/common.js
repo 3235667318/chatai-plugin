@@ -292,7 +292,7 @@ export function isSimilarContent(content1, content2, options = {}) {
  * @returns {Promise<string|null>}
  */
 export async function getAIResponse(eventDesc, options = {}) {
-    const { userId, groupId, maxLength = 100, mode = 'roleplay', disableTools = false, logTag = 'AI' } = options
+    const { userId, groupId, maxLength = 100, mode = 'roleplay', disableTools = false, logTag = 'AI', event = null, senderName = '' } = options
     const startTime = Date.now()
     try {
         const { chatService } = await import('../services/llm/ChatService.js')
@@ -304,6 +304,10 @@ export async function getAIResponse(eventDesc, options = {}) {
             skipHistory: true
         }
         if (disableTools) sendOpts.disableTools = true
+        // 把原始事件带进去：ChatService 用 event.sender 生成「群名片(QQ)」标签，
+        // 没有它就只能退化成「用户123456」，模型照着 @ 这个假名字就 @ 不到人
+        if (event) sendOpts.event = event
+        if (senderName) sendOpts.senderName = senderName
 
         const result = await chatService.sendMessage(sendOpts)
         let reply =

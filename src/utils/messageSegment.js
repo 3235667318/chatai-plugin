@@ -525,11 +525,14 @@ export async function sendSegmentedMessage(e, text, options = {}) {
         sentenceDelays,
         sentencePriorityOverFold = false,
         onSegmentSent,
-        replyOptions
+        replyOptions,
+        decorate
     } = options
 
     const emptyResult = { messageIds: [], lastMessageId: null, folded: false }
     if (!e?.reply) return emptyResult
+    const sendOne = (content, quoted) =>
+        e.reply(typeof decorate === 'function' ? decorate(content) : content, quoted, replyOptions)
     if (typeof text !== 'string' || !text.trim()) return emptyResult
     const trimmed = text.trim()
 
@@ -560,7 +563,7 @@ export async function sendSegmentedMessage(e, text, options = {}) {
         ? splitIntoSentences(trimmed, { force: true })
         : splitMessage(trimmed, { chunkSize, maxChunk })
     if (segments.length === 1) {
-        const result = await e.reply(segments[0], quote, replyOptions)
+        const result = await sendOne(segments[0], quote)
         const messageId = result?.message_id
         return {
             messageIds: messageId ? [messageId] : [],
@@ -573,7 +576,7 @@ export async function sendSegmentedMessage(e, text, options = {}) {
     const messageIds = []
     let lastMessageId = null
     for (let i = 0; i < polishedSegments.length; i++) {
-        const result = await e.reply(polishedSegments[i], quote && i === 0, replyOptions)
+        const result = await sendOne(polishedSegments[i], quote && i === 0)
         const messageId = result?.message_id
         if (messageId) {
             messageIds.push(messageId)

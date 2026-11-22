@@ -66,7 +66,12 @@ const router = express.Router()
 router.get('/config', (req, res) => {
     try {
         const imageGenConfig = config.get('features.imageGen') || {}
-        res.json(ChaiteResponse.ok(imageGenConfig))
+        res.json(
+            ChaiteResponse.ok({
+                ...imageGenConfig,
+                comfyDraw: config.get('features.comfyDraw') || {}
+            })
+        )
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))
     }
@@ -75,8 +80,14 @@ router.get('/config', (req, res) => {
 // PUT /config - 更新图像生成配置
 router.put('/config', async (req, res) => {
     try {
+        const body = { ...(req.body || {}) }
+        if (body.comfyDraw && typeof body.comfyDraw === 'object') {
+            const currentComfy = config.get('features.comfyDraw') || {}
+            config.set('features.comfyDraw', { ...currentComfy, ...body.comfyDraw })
+            delete body.comfyDraw
+        }
         const current = config.get('features.imageGen') || {}
-        config.set('features.imageGen', { ...current, ...req.body })
+        config.set('features.imageGen', { ...current, ...body })
         res.json(ChaiteResponse.ok({ success: true }))
     } catch (error) {
         res.status(500).json(ChaiteResponse.fail(null, error.message))

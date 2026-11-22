@@ -5,6 +5,10 @@
 import { databaseService } from '../storage/DatabaseService.js'
 import { toolCallStats } from './ToolCallStats.js'
 import { usageStats } from './UsageStats.js'
+import { redisClient } from '../../core/cache/RedisClient.js'
+
+/** 每日工具调用计数（Redis hash: chaite:tools_daily:<YYYY-MM-DD>） */
+const TOOLS_DAILY_KEY = 'chaite:tools_daily:'
 import { telemetryService } from '../telemetry/index.js'
 import { chatLogger } from '../../core/utils/logger.js'
 import fs from 'node:fs'
@@ -613,6 +617,7 @@ class StatsService {
                 stream,
                 isEstimated,
                 request,
+                responseText: responseText ? String(responseText).slice(0, 500) : null,
                 response: !success ? response : null
             })
         } catch (err) {
@@ -627,6 +632,12 @@ class StatsService {
      */
     recordToolCall(toolName, success = true) {
         this.init()
+
+        // 每日工具计数（今日用量里的「搜索 N 次」用）
+        try {
+            const day = new Date().toLocaleDateString('sv-SE')
+            redisClient.hincrby(`${TOOLS_DAILY_KEY}${day}`, toolName, 1).catch?.(() => {})
+        } catch {}
 
         this.stats.tools.total++
 

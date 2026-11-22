@@ -3,8 +3,10 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import axios from 'axios'
 import crypto from 'crypto'
+import config from '../config/config.js'
+import { isIgnoredBot } from '../src/utils/botFilter.js'
 import { ensureScopeManager } from '../src/services/scope/ScopeManager.js'
-import { getBfaceUrl } from '../src/utils/messageParser.js'
+import { getBfaceUrl, segment } from '../src/utils/messageParser.js'
 import { chatLogger as logger } from '../src/core/utils/logger.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -50,29 +52,40 @@ class EmojiThiefService {
      * 获取群组配置
      */
     async getGroupConfig(groupId) {
+        // 全局默认值（config.yaml → features.emojiThief），群里有单独设置时以群设置优先
+        const globalCfg = config.get('features.emojiThief') || {}
+        const fallback = {
+            enabled: globalCfg.globalEnabled === true,
+            // 全群共享优先于默认独立开关，但低于单群设置（settings.emojiThiefSeparateFolder）
+            separateFolder: globalCfg.globalShared === true ? false : (globalCfg.defaultSeparateFolder ?? true),
+            maxCount: globalCfg.defaultMaxCount ?? 500,
+            stealRate: globalCfg.defaultStealRate ?? 1.0,
+            triggerMode: globalCfg.defaultTriggerMode ?? 'off',
+            triggerRate: globalCfg.defaultTriggerRate ?? 0.05
+        }
         try {
             const scopeManager = await ensureScopeManager()
             const groupSettings = await scopeManager.getGroupSettings(String(groupId))
             const settings = groupSettings?.settings || {}
 
+            // 全局开启只对 ChatAI 白名单群生效；白名单为空时视为不限
+            const whitelist = (config.get('trigger.group.whitelistGroups') || []).map(String)
+            const whitelistOnly = (config.get('features.emojiThief') || {}).whitelistOnly !== false
+            // 与群管理/作用域保持一致：群被关掉（settings.enabled === false）时表情包也停
+            const scopeEnabled = settings.enabled !== false
+            const allowedByWhitelist =
+                scopeEnabled && (!whitelistOnly || whitelist.length === 0 || whitelist.includes(String(groupId)))
             return {
-                enabled: settings.emojiThiefEnabled ?? false,
-                separateFolder: settings.emojiThiefSeparateFolder ?? true, // 独立文件夹
-                maxCount: settings.emojiThiefMaxCount ?? 500,
-                stealRate: settings.emojiThiefStealRate ?? 1.0, // 偷取概率
-                triggerMode: settings.emojiThiefTriggerMode ?? 'random',
-                triggerRate: settings.emojiThiefTriggerRate ?? 0.05 // 发送概率
+                enabled: settings.emojiThiefEnabled ?? (fallback.enabled && allowedByWhitelist),
+                separateFolder: settings.emojiThiefSeparateFolder ?? fallback.separateFolder, // 独立文件夹
+                maxCount: settings.emojiThiefMaxCount ?? fallback.maxCount,
+                stealRate: settings.emojiThiefStealRate ?? fallback.stealRate, // 偷取概率
+                triggerMode: settings.emojiThiefTriggerMode ?? fallback.triggerMode,
+                triggerRate: settings.emojiThiefTriggerRate ?? fallback.triggerRate // 发送概率
             }
         } catch (err) {
-            logger.debug('[EmojiThief] 获取群组配置失败:', err.message)
-            return {
-                enabled: false,
-                separateFolder: true,
-                maxCount: 500,
-                stealRate: 1.0,
-                triggerMode: 'random',
-                triggerRate: 0.05
-            }
+            logger.debug('[EmojiThief] 获取群组配置失败，使用全局默认:', err.message)
+            return fallback
         }
     }
 
@@ -337,11 +350,8 @@ class EmojiThiefService {
      * 构建表情包消息
      */
     buildEmojiMessage(filePath) {
-        return {
-            type: 'image',
-            file: `file://${filePath}`,
-            subType: 1
-        }
+        // sub_type=1 让 OneBot/NapCat 按“表情”发送，而不是普通图片
+        return segment.image(`file://${filePath}`, { sub_type: 1, subType: 1 })
     }
 
     /**
@@ -386,7 +396,8 @@ class EmojiThiefService {
     recordEmojiSent(groupId) {
         const state = this.getSessionState(groupId)
         state.lastEmojiTime = Date.now()
-        state.consecutiveCount = 0 // 成功发送后重置连续计数
+        // 连续发送才累加惩罚（原逻辑在发送后归零，惩罚永远不生效）
+        state.consecutiveCount = Math.min(state.consecutiveCount + 1, this.dynamicConfig.maxConsecutive)
     }
 
     /**
@@ -395,8 +406,8 @@ class EmojiThiefService {
      */
     recordEmojiSkipped(groupId) {
         const state = this.getSessionState(groupId)
-        // 增加连续未发送计数，但有上限
-        state.consecutiveCount = Math.min(state.consecutiveCount + 1, 10)
+        // 中间有跳过就打断连发计数；原逻辑把“连续跳过”也当连发，概率会衰减到接近 0
+        state.consecutiveCount = 0
     }
 
     /**
@@ -413,8 +424,14 @@ class EmojiThiefService {
 
         if (!config.enabled) return null
 
-        const mode = config.triggerMode
+        let mode = config.triggerMode
         const baseRate = config.triggerRate
+
+        // 伪人来源：群里的 chat_random / chat_follow 也按伪人模式生效
+        if (triggerSource === 'bym') {
+            if (mode === 'chat_random') mode = 'bym_random'
+            else if (mode === 'chat_follow') mode = 'bym_follow'
+        }
 
         // 根据触发来源和模式判断是否触发
         let shouldTrigger = false
@@ -654,6 +671,7 @@ export class EmojiThief extends pluginBase {
     }
 
     async collectAndTrigger(e) {
+        if (isIgnoredBot(e)) return
         // 收集表情包
         await emojiThiefService.collectEmoji(e)
 

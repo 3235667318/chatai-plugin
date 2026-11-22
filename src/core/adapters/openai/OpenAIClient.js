@@ -419,7 +419,8 @@ function shouldAttachVendorThinkingType(control, baseUrl) {
         u.includes('open.bigmodel') ||
         u.includes('zhipu') ||
         u.includes('glm') ||
-        u.includes('maas')
+        u.includes('maas') ||
+        u.includes('deepseek')
     )
 }
 
